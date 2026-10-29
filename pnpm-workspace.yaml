@@ -1,2 +1,7 @@
+# Hub 是单包项目；`packages` 让 pnpm 9 也把它当成合法 workspace，
+# `allowBuilds` 让 pnpm 10+ 允许 esbuild 的安装脚本。
+packages:
+  - "."
+
 allowBuilds:
   esbuild: true
