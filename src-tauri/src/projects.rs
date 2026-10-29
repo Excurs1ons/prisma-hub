@@ -165,7 +165,13 @@ pub fn project_name(root: &Path, fallback: &str) -> String {
 }
 
 /// 用磁盘上的当前状态构造条目；`running` 由调用方提供。
-pub fn entry(root: &Path, stored_path: &str, added_at: u64, last_opened: Option<u64>, running: bool) -> ProjectEntry {
+pub fn entry(
+    root: &Path,
+    stored_path: &str,
+    added_at: u64,
+    last_opened: Option<u64>,
+    running: bool,
+) -> ProjectEntry {
     let exists = root.is_dir();
     let structure = if exists {
         structure_of(root)

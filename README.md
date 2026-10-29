@@ -31,7 +31,8 @@ Hub 是**独立项目**（自己的 Cargo workspace），不依赖 PrismaRev 仓
 1. `PRISMREV_ROOT`（显式覆盖；设置了却无效会直接报错，不回退）；
 2. 设置页保存的路径；
 3. Hub 可执行文件的各级父目录（开发布局）；
-4. Hub 可执行文件各级父目录的同级目录（例如 `~/src/PrismaRev` 与 `~/src/prisma-hub`）。
+4. Hub 可执行文件各级父目录的同级目录（仅开发布局：Hub 自己是一个 checkout 时，
+   例如 `~/src/PrismaRev` 与 `~/src/prisma-hub`）。
 
 ### 编辑器安装
 

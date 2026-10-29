@@ -82,9 +82,7 @@ impl HubState {
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, HubInner>, String> {
-        self.inner
-            .lock()
-            .map_err(|_| "Hub 状态已损坏".to_string())
+        self.inner.lock().map_err(|_| "Hub 状态已损坏".to_string())
     }
 
     fn engine_info(&self) -> EngineInfo {
@@ -99,7 +97,12 @@ impl HubState {
     fn installs(&self, engine: &EngineInfo) -> Vec<EditorInstall> {
         let (stored, default) = self
             .lock()
-            .map(|inner| (inner.store.editors.clone(), inner.store.default_editor.clone()))
+            .map(|inner| {
+                (
+                    inner.store.editors.clone(),
+                    inner.store.default_editor.clone(),
+                )
+            })
             .unwrap_or_default();
         let env = std::env::var(editors::EDITOR_BIN_ENV).ok();
         editors::resolve_installs(
@@ -290,12 +293,8 @@ impl HubState {
         std::fs::create_dir_all(&target)
             .map_err(|error| format!("无法创建工程目录 {}: {error}", target.display()))?;
 
-        let result = projects::write_project_skeleton(
-            &target,
-            name,
-            engine.root_path().as_deref(),
-            version,
-        );
+        let result =
+            projects::write_project_skeleton(&target, name, engine.root_path().as_deref(), version);
         if let Err(error) = result {
             // 半成品目录比没有更糟：失败时整体回滚。
             let _ = std::fs::remove_dir_all(&target);
@@ -309,11 +308,7 @@ impl HubState {
     ///
     /// 编辑器选择：`editor` 显式指定 > 版本标记完全匹配 > 默认编辑器。
     /// 启动后把版本标记更新成实际使用的版本（Unity 的升级行为）。
-    pub fn open_project(
-        &self,
-        raw: &str,
-        editor: Option<&str>,
-    ) -> Result<ProjectEntry, String> {
+    pub fn open_project(&self, raw: &str, editor: Option<&str>) -> Result<ProjectEntry, String> {
         let path = canonical_project_dir(raw)?;
         let key = canonical_string(&path);
 
@@ -622,7 +617,9 @@ mod tests {
 
         let seeds = seed_projects(Some(&root));
         assert_eq!(seeds.len(), 2);
-        assert!(seeds.iter().any(|seed| seed.path.ends_with("projects/demo")));
+        assert!(seeds
+            .iter()
+            .any(|seed| seed.path.ends_with("projects/demo")));
     }
 
     #[test]

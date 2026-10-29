@@ -116,7 +116,7 @@ async function revealStore() {
         <div class="hint">
           探测顺序：<code>PRISMREV_ROOT</code>（显式覆盖）→ 本页保存的路径 →
           Hub 所在目录的上级 → 同级目录里含 <code>crates/prism-app</code> 的
-          checkout。环境变量设置了却无效会直接报错，不会静默回退。
+          checkout（仅开发布局）。环境变量设置了却无效会直接报错，不会静默回退。
         </div>
       </div>
 

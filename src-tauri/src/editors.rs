@@ -117,7 +117,10 @@ pub fn candidates(
 ) -> Vec<EditorInstall> {
     let mut out = Vec::new();
 
-    if let Some(raw) = env_override.map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(raw) = env_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         out.push(EditorInstall::new(Path::new(raw), "env"));
     }
 
@@ -233,7 +236,10 @@ pub fn pick_for_project<'a>(
 
 /// 显式指定但不可用时的错误信息，避免静默换成别的编辑器。
 pub fn explicit_editor_error(installs: &[EditorInstall], path: &str) -> String {
-    match installs.iter().find(|install| same_path(&install.path, path)) {
+    match installs
+        .iter()
+        .find(|install| same_path(&install.path, path))
+    {
         Some(install) if !install.available => {
             format!("编辑器不存在或不可执行：{}", install.path)
         }
@@ -247,10 +253,8 @@ mod tests {
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "prisma-hub-editors-{name}-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("prisma-hub-editors-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("创建临时目录");
         dir
@@ -293,10 +297,7 @@ mod tests {
     fn bundled_binaries_are_discovered() {
         let root = scratch("bundled");
         let exe_dir = root.join("dist");
-        touch(&exe_dir.join(format!(
-            "prisma-editor{}",
-            std::env::consts::EXE_SUFFIX
-        )));
+        touch(&exe_dir.join(format!("prisma-editor{}", std::env::consts::EXE_SUFFIX)));
 
         let installs = resolve_installs(&exe_dir, None, &[], None, None);
         assert_eq!(installs.len(), 1);
@@ -329,13 +330,8 @@ mod tests {
         std::fs::create_dir_all(&exe_dir).expect("创建 exe 目录");
         let missing = root.join("bin/prisma-editor");
 
-        let installs = resolve_installs(
-            &exe_dir,
-            None,
-            &[],
-            None,
-            Some(&missing.to_string_lossy()),
-        );
+        let installs =
+            resolve_installs(&exe_dir, None, &[], None, Some(&missing.to_string_lossy()));
         assert_eq!(installs.len(), 1);
         assert_eq!(installs[0].source, "env");
         assert!(!installs[0].available);

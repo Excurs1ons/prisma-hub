@@ -148,6 +148,8 @@ pub fn detect(exe_dir: &Path, setting: Option<&str>, env: Option<&str>) -> Engin
         };
     }
 
+    // 设置值无效时继续自动探测，但把「为什么没用设置」带回 UI。
+    let mut invalid_setting: Option<String> = None;
     if let Some(raw) = setting_owned.as_deref() {
         let path = PathBuf::from(raw);
         if is_engine_root(&path) {
@@ -159,7 +161,14 @@ pub fn detect(exe_dir: &Path, setting: Option<&str>, env: Option<&str>) -> Engin
                 hint: None,
             };
         }
+        invalid_setting = Some(raw.to_string());
     }
+
+    let setting_hint = || {
+        invalid_setting
+            .as_deref()
+            .map(|raw| format!("设置页保存的源码根无效，已改用自动探测：{raw}"))
+    };
 
     for (source, found) in [
         (EngineSource::Ancestor, ancestor_root(exe_dir)),
@@ -171,7 +180,7 @@ pub fn detect(exe_dir: &Path, setting: Option<&str>, env: Option<&str>) -> Engin
                 root: Some(crate::util::canonical_string(&path)),
                 source: source.label(),
                 setting: setting_owned,
-                hint: None,
+                hint: setting_hint(),
             };
         }
     }
@@ -181,10 +190,16 @@ pub fn detect(exe_dir: &Path, setting: Option<&str>, env: Option<&str>) -> Engin
         source: EngineSource::None.label(),
         setting: setting_owned,
         editor_version: None,
-        hint: Some(format!(
-            "没有找到 PrismaRev 源码。设置 {ENGINE_ROOT_ENV}、在设置页选择源码目录，\
-             或把 Hub 和 PrismaRev 放在同一父目录下。"
-        )),
+        hint: Some(match invalid_setting {
+            Some(raw) => format!(
+                "设置页保存的源码根无效：{raw}。也可以设置 {ENGINE_ROOT_ENV}，\
+                 或把 Hub 和 PrismaRev 放在同一父目录下。"
+            ),
+            None => format!(
+                "没有找到 PrismaRev 源码。设置 {ENGINE_ROOT_ENV}、在设置页选择源码目录，\
+                 或把 Hub 和 PrismaRev 放在同一父目录下。"
+            ),
+        }),
     }
 }
 
@@ -265,6 +280,21 @@ mod tests {
             info.root.as_deref(),
             Some(other.canonicalize().unwrap().to_string_lossy().as_ref())
         );
+    }
+
+    #[test]
+    fn invalid_setting_falls_back_with_a_hint() {
+        let root = scratch("bad-setting");
+        fake_engine(&root, "0.1.0");
+        let exe_dir = root.join("hub/src-tauri/target/debug");
+        std::fs::create_dir_all(&exe_dir).expect("创建 exe 目录");
+
+        let info = detect(&exe_dir, Some("/definitely/not/a/checkout"), None);
+        assert_eq!(info.source, "ancestor");
+        assert!(info.root.is_some());
+        assert!(info
+            .hint
+            .is_some_and(|hint| hint.contains("设置页保存的源码根无效")));
     }
 
     #[test]

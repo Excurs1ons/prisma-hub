@@ -97,8 +97,7 @@ impl HubStore {
             std::fs::create_dir_all(parent)
                 .map_err(|error| format!("创建应用数据目录失败: {error}"))?;
         }
-        std::fs::write(path, text)
-            .map_err(|error| format!("写入 {} 失败: {error}", path.display()))
+        std::fs::write(path, text).map_err(|error| format!("写入 {} 失败: {error}", path.display()))
     }
 }
 
@@ -112,10 +111,8 @@ mod tests {
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "prisma-hub-store-{name}-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("prisma-hub-store-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("创建临时目录");
         dir
