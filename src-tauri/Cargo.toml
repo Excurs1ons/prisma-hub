@@ -1,0 +1,35 @@
+[package]
+name = "prisma-hub"
+version = "0.1.0"
+description = "PrismaRev Hub — Unity Hub 形态的工程管理器"
+authors = ["Excurs1ons"]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[lib]
+# The `_lib` suffix keeps the lib name distinct from the bin name on Windows
+# (https://github.com/rust-lang/cargo/issues/8519).
+name = "prisma_hub_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+# 原生目录 / 文件选择器（添加工程、选择源码根、添加编辑器）。
+tauri-plugin-dialog = "2"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Standalone workspace: the Hub is its own project and is not a member of the
+# PrismaRev root workspace.
+[workspace]
+
+[profile.release]
+opt-level = "s"      # 优先体积
+lto = true           # 链接期优化
+codegen-units = 1    # 更好优化
+panic = "abort"      # 去掉 unwind 表
+strip = true         # 去符号
