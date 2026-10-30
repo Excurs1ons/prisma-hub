@@ -53,6 +53,29 @@ export type HubEnvironment = {
   storePath: string;
 };
 
+/** 工程维度：决定组件组（`group-2d` / `group-3d`）。 */
+export type ProjectDimension = "2d" | "3d";
+
+/** 新建工程时勾选的能力；字段名与 Rust 的 `ProjectCapabilities` 一致。 */
+export type ProjectCapabilities = {
+  dimension: ProjectDimension;
+  ui: boolean;
+  audio: boolean;
+  physics: boolean;
+  pathtrace: boolean;
+  /** Linux 窗口后端（其它平台忽略）。 */
+  x11: boolean;
+  wayland: boolean;
+};
+
+/** 新建工程的结果：`features` 是真实写进 `Cargo.toml` 的列表，由后端推导。 */
+export type CreatedProject = {
+  project: ProjectEntry;
+  path: string;
+  features: string[];
+  gameCrate: boolean;
+};
+
 export const hub = {
   environment: () => invoke<HubEnvironment>("hub_environment"),
   setEngineRoot: (path: string) =>
@@ -68,8 +91,16 @@ export const hub = {
   addProject: (path: string) => invoke<ProjectEntry>("hub_add_project", { path }),
   removeProject: (path: string) =>
     invoke<ProjectEntry[]>("hub_remove_project", { path }),
-  createProject: (name: string, location: string) =>
-    invoke<ProjectEntry>("hub_create_project", { name, location }),
+  createProject: (
+    name: string,
+    location: string,
+    capabilities: ProjectCapabilities,
+  ) =>
+    invoke<CreatedProject>("hub_create_project", {
+      name,
+      location,
+      capabilities,
+    }),
   openProject: (path: string, editor?: string | null) =>
     invoke<ProjectEntry>("hub_open_project", { path, editor: editor ?? null }),
   revealProject: (path: string) =>

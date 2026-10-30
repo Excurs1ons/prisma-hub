@@ -7,7 +7,10 @@ import {
   hub,
   prettyPath,
   relativeTime,
+  type CreatedProject,
   type HubEnvironment,
+  type ProjectCapabilities,
+  type ProjectDimension,
   type ProjectEntry,
 } from "../api";
 import type { Notice } from "../types";
@@ -29,6 +32,31 @@ const showNew = ref(false);
 const newName = ref("");
 const newLocation = ref("");
 const creating = ref(false);
+/** 创建失败时的原始错误；留在弹窗里，用户不用去翻 toast。 */
+const newError = ref("");
+/** 创建成功后的结果：路径 + 后端实际写进 Cargo.toml 的 feature。 */
+const created = ref<CreatedProject | null>(null);
+const newDimension = ref<ProjectDimension>("3d");
+const newUi = ref(false);
+const newAudio = ref(false);
+const newPhysics = ref(false);
+const newPathtrace = ref(false);
+const newX11 = ref(true);
+const newWayland = ref(true);
+
+/**
+ * 勾选的能力。推导成 feature 的规则只在 Rust 侧
+ * （`projects::ProjectCapabilities::features`），这里只负责收集。
+ */
+const newCapabilities = computed<ProjectCapabilities>(() => ({
+  dimension: newDimension.value,
+  ui: newUi.value,
+  audio: newAudio.value,
+  physics: newPhysics.value,
+  pathtrace: newPathtrace.value,
+  x11: newX11.value,
+  wayland: newWayland.value,
+}));
 
 const selected = computed(
   () => props.projects.find((project) => project.path === selectedPath.value) ?? null,
@@ -166,7 +194,22 @@ function openNewProject() {
   newLocation.value = props.env.engine.root
     ? `${props.env.engine.root}/projects`
     : "";
+  newDimension.value = "3d";
+  newUi.value = false;
+  newAudio.value = false;
+  newPhysics.value = false;
+  newPathtrace.value = false;
+  newX11.value = true;
+  newWayland.value = true;
+  newError.value = "";
+  created.value = null;
   showNew.value = true;
+}
+
+function closeNewProject() {
+  showNew.value = false;
+  created.value = null;
+  newError.value = "";
 }
 
 async function chooseLocation() {
@@ -185,17 +228,34 @@ async function chooseLocation() {
 async function createProject() {
   if (!canCreate.value) return;
   creating.value = true;
+  newError.value = "";
   try {
-    const entry = await hub.createProject(newName.value.trim(), newLocation.value.trim());
-    showNew.value = false;
-    selectedPath.value = entry.path;
+    const result = await hub.createProject(
+      newName.value.trim(),
+      newLocation.value.trim(),
+      newCapabilities.value,
+    );
+    created.value = result;
+    selectedPath.value = result.project.path;
     emit("refresh");
-    const version = entry.editorVersion ? `，版本 ${entry.editorVersion}` : "";
-    props.notify("ok", `已创建工程 ${entry.name}${version}`);
+    const features = result.features.length
+      ? ` · ${result.features.join(", ")}`
+      : "";
+    props.notify("ok", `已创建工程 ${result.project.name}${features}`);
   } catch (error) {
-    props.notify("error", errorText(error));
+    newError.value = errorText(error);
+    props.notify("error", newError.value);
   } finally {
     creating.value = false;
+  }
+}
+
+async function revealCreated() {
+  if (!created.value) return;
+  try {
+    await hub.revealProject(created.value.path);
+  } catch (error) {
+    props.notify("error", errorText(error));
   }
 }
 </script>
@@ -437,54 +497,155 @@ async function createProject() {
     </div>
   </section>
 
-  <div v-if="showNew" class="modal-backdrop" @click.self="showNew = false">
+  <div v-if="showNew" class="modal-backdrop" @click.self="closeNewProject">
     <div class="modal">
       <header class="modal-head">
         <div>
-          <h2>新建工程</h2>
-          <p>创建一个可以直接在编辑器中打开的资源工程。</p>
+          <h2>{{ created ? "工程已创建" : "新建工程" }}</h2>
+          <p>
+            {{
+              created
+                ? "下面是实际生成的目录与 feature 组合。"
+                : "勾选能力后生成资源骨架与最小游戏 crate（feature 由勾选项推导）。"
+            }}
+          </p>
         </div>
-        <button class="icon-btn" aria-label="关闭" @click="showNew = false">×</button>
+        <button class="icon-btn" aria-label="关闭" @click="closeNewProject">×</button>
       </header>
 
-      <label class="field">
-        <span>工程名称</span>
-        <input
-          v-model="newName"
-          placeholder="MyGame"
-          spellcheck="false"
-          autofocus
-          @keydown.enter="createProject"
-        />
-      </label>
+      <template v-if="created">
+        <div class="result-card">
+          <p class="section-label">路径</p>
+          <p class="result-path mono">{{ prettyPath(created.path) }}</p>
 
-      <label class="field">
-        <span>位置</span>
-        <div class="field-row">
-          <input v-model="newLocation" placeholder="选择工程父目录" spellcheck="false" />
-          <button class="btn" @click="chooseLocation">浏览…</button>
+          <p class="section-label">实际 feature</p>
+          <p v-if="created.features.length" class="feature-list">
+            <code v-for="feature in created.features" :key="feature" class="feature-tag">
+              {{ feature }}
+            </code>
+          </p>
+          <p v-else class="result-note">
+            没有生成游戏 crate（Hub 没找到 PrismaRev 源码），因此没有 feature 列表。
+          </p>
         </div>
-      </label>
 
-      <p v-if="newProjectPath" class="path-preview mono">{{ newProjectPath }}</p>
+        <p v-if="!created.gameCrate" class="callout warn">
+          只生成了资源工程。要补上 `Cargo.toml` / `src/`，先在「设置」页指定 PrismaRev
+          源码目录，再重新新建工程。
+        </p>
+        <p v-else class="result-note">
+          工程已加入列表。改能力 = 编辑 `Cargo.toml` 里 `prism-app` 的 features，再
+          <code>cargo check</code>。
+        </p>
 
-      <div class="template">
-        <div class="template-card selected">
-          <strong>空工程</strong>
-          <span>默认场景（相机 + 平行光）、场景清单与 ProjectVersion.txt</span>
+        <footer class="modal-foot">
+          <button class="btn" @click="revealCreated">在文件管理器中显示</button>
+          <button class="btn primary" @click="closeNewProject">完成</button>
+        </footer>
+      </template>
+
+      <template v-else>
+        <label class="field">
+          <span>工程名称</span>
+          <input
+            v-model="newName"
+            placeholder="MyGame"
+            spellcheck="false"
+            autofocus
+            @keydown.enter="createProject"
+          />
+        </label>
+
+        <label class="field">
+          <span>位置</span>
+          <div class="field-row">
+            <input v-model="newLocation" placeholder="选择工程父目录" spellcheck="false" />
+            <button class="btn" @click="chooseLocation">浏览…</button>
+          </div>
+        </label>
+
+        <p v-if="newProjectPath" class="path-preview mono">{{ newProjectPath }}</p>
+
+        <div class="field">
+          <span>维度</span>
+          <div class="segmented">
+            <button
+              class="segment"
+              :class="{ active: newDimension === '3d' }"
+              @click="newDimension = '3d'"
+            >
+              3D
+              <em>group-3d</em>
+            </button>
+            <button
+              class="segment"
+              :class="{ active: newDimension === '2d' }"
+              @click="newDimension = '2d'"
+            >
+              2D
+              <em>group-2d</em>
+            </button>
+          </div>
         </div>
-      </div>
 
-      <p v-if="!env.engine.root" class="callout warn">
-        没有找到 PrismaRev 源码，只会生成资源工程（不含游戏 crate）。可以在「设置」页指定源码目录。
-      </p>
+        <div class="field">
+          <span>能力</span>
+          <div class="cap-grid">
+            <label class="cap">
+              <input v-model="newUi" type="checkbox" />
+              <span>UI 叠加</span>
+              <em>ui</em>
+            </label>
+            <label class="cap">
+              <input v-model="newAudio" type="checkbox" />
+              <span>音频</span>
+              <em>audio</em>
+            </label>
+            <label class="cap">
+              <input v-model="newPhysics" type="checkbox" />
+              <span>物理</span>
+              <em>physics</em>
+            </label>
+            <label class="cap">
+              <input v-model="newPathtrace" type="checkbox" />
+              <span>路径追踪</span>
+              <em>pathtrace</em>
+            </label>
+          </div>
+        </div>
 
-      <footer class="modal-foot">
-        <button class="btn" @click="showNew = false">取消</button>
-        <button class="btn primary" :disabled="!canCreate" @click="createProject">
-          {{ creating ? "正在创建…" : "创建工程" }}
-        </button>
-      </footer>
+        <div class="field">
+          <span>Linux 窗口后端</span>
+          <div class="cap-grid">
+            <label class="cap">
+              <input v-model="newX11" type="checkbox" />
+              <span>x11</span>
+            </label>
+            <label class="cap">
+              <input v-model="newWayland" type="checkbox" />
+              <span>wayland</span>
+            </label>
+          </div>
+        </div>
+
+        <p v-if="!newX11 && !newWayland" class="callout warn">
+          Linux 上至少要选一个窗口后端（x11 或 wayland），否则生成的程序无法开窗口。
+          其它平台不需要这两个 feature。
+        </p>
+
+        <p v-if="!env.engine.root" class="callout warn">
+          没有找到 PrismaRev 源码，只会生成资源工程（不含游戏 crate）。可以在「设置」页指定源码目录。
+        </p>
+
+        <p v-if="newError" class="callout danger">{{ newError }}</p>
+
+        <footer class="modal-foot">
+          <button class="btn" @click="closeNewProject">取消</button>
+          <button class="btn primary" :disabled="!canCreate" @click="createProject">
+            {{ creating ? "正在创建…" : "创建工程" }}
+          </button>
+        </footer>
+      </template>
     </div>
   </div>
 </template>

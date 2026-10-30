@@ -42,6 +42,19 @@ pub struct HubEnvironment {
     pub store_path: String,
 }
 
+/// 新建工程的结果：界面要显示实际路径与真实下发的 feature 列表。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatedProject {
+    pub project: ProjectEntry,
+    /// 工程根目录（创建后的 canonical 路径）。
+    pub path: String,
+    /// 写进 `Cargo.toml` 的 `prism-app` feature；没生成游戏 crate 时为空。
+    pub features: Vec<String>,
+    /// 是否生成了游戏 crate（没找到引擎源码时只有资源工程）。
+    pub game_crate: bool,
+}
+
 impl HubState {
     /// 从应用数据目录加载；首次运行（没有 `hub.json`）时用引擎 checkout 里的工程做种子。
     pub fn load(app: &AppHandle) -> Result<Self, String> {
@@ -271,11 +284,20 @@ impl HubState {
         Ok(inner.entries())
     }
 
-    /// 新建工程：目录 + `assets/` 骨架（+ 能找到引擎源码时的最小游戏 crate），
-    /// 并把当前默认编辑器的版本写进 `ProjectSettings/ProjectVersion.txt`。
-    pub fn create_project(&self, name: &str, location: &str) -> Result<ProjectEntry, String> {
+    /// 新建工程：目录 + `assets/` 骨架 + （能找到引擎源码时）按勾选能力生成的游戏
+    /// crate，并把当前默认编辑器的版本写进 `ProjectSettings/ProjectVersion.txt`。
+    ///
+    /// 能力 → feature 的推导只在 [`projects::ProjectCapabilities::features`] 一处，
+    /// 这里只负责把结果原样回报给界面。
+    pub fn create_project(
+        &self,
+        name: &str,
+        location: &str,
+        capabilities: &projects::ProjectCapabilities,
+    ) -> Result<CreatedProject, String> {
         let name = name.trim();
         projects::validate_project_name(name)?;
+        capabilities.validate()?;
         let location = canonical_dir(location)?;
         let target = location.join(name);
         if target.exists() {
@@ -293,15 +315,29 @@ impl HubState {
         std::fs::create_dir_all(&target)
             .map_err(|error| format!("无法创建工程目录 {}: {error}", target.display()))?;
 
-        let result =
-            projects::write_project_skeleton(&target, name, engine.root_path().as_deref(), version);
-        if let Err(error) = result {
-            // 半成品目录比没有更糟：失败时整体回滚。
-            let _ = std::fs::remove_dir_all(&target);
-            return Err(error);
-        }
+        let result = projects::write_project_skeleton(
+            &target,
+            name,
+            engine.root_path().as_deref(),
+            version,
+            capabilities,
+        );
+        let generated = match result {
+            Ok(generated) => generated,
+            Err(error) => {
+                // 半成品目录比没有更糟：失败时整体回滚。
+                let _ = std::fs::remove_dir_all(&target);
+                return Err(error);
+            }
+        };
 
-        self.add_project(&target.to_string_lossy())
+        let project = self.add_project(&target.to_string_lossy())?;
+        Ok(CreatedProject {
+            path: canonical_string(&target),
+            project,
+            features: generated.features,
+            game_crate: generated.game_crate,
+        })
     }
 
     /// 启动编辑器打开工程。
@@ -542,8 +578,9 @@ pub fn hub_create_project(
     state: State<'_, HubState>,
     name: String,
     location: String,
-) -> Result<ProjectEntry, String> {
-    state.create_project(&name, &location)
+    capabilities: projects::ProjectCapabilities,
+) -> Result<CreatedProject, String> {
+    state.create_project(&name, &location, &capabilities)
 }
 
 #[tauri::command]
