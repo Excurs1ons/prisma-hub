@@ -4,8 +4,7 @@ PrismaRev 的桌面工程管理器：管理工程、管理编辑器安装，并�
 编辑器。
 
 Hub 是**独立项目**（自己的 Cargo workspace），不依赖 PrismaRev 仓库的内部布局；
-它只通过「PrismaRev 源码根」定位引擎 crate 与编辑器。界面、交互与文案按独立设计
-（cleanroom）维护，只描述 PrismaRev 自己的约定，不引用其它产品的名称或行为作类比。
+它只通过「PrismaRev 源码根」定位引擎 crate 与编辑器。
 
 ## 功能
 
