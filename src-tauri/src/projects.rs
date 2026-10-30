@@ -332,17 +332,16 @@ impl Default for ProjectCapabilities {
 impl ProjectCapabilities {
     /// 推导 `prism-app` 的 feature 列表（顺序固定，便于比较与展示）。
     ///
-    /// - 维度 → `group-2d` / `group-3d`，总带 `group-ui`（组件组：场景里的
-    ///   `Node` / `Style` / `Text` 仍然能反序列化）；
-    /// - `ui` 是**渲染叠加 + 引擎 UI 系统**，与 `group-ui` 组件组是两件事；
+    /// - 维度 → `group-2d` / `group-3d`；
+    /// - `ui` 才带 `group-ui`：`ui` 是渲染叠加 + 引擎 UI 系统，`group-ui` 是
+    ///   `Node` / `Style` / `Text` 的组件组。不勾 UI 时两者都不加——模板场景里没有
+    ///   UI 节点，没必要把 UI 组件的 serde / 反射代码链进二进制；
     /// - 窗口后端只在勾选时追加。
     pub fn features(&self) -> Vec<String> {
-        let mut features = vec![
-            self.dimension.component_group().to_string(),
-            "group-ui".to_string(),
-        ];
+        let mut features = vec![self.dimension.component_group().to_string()];
         if self.ui {
             features.push("ui".to_string());
+            features.push("group-ui".to_string());
         }
         if self.audio {
             features.push("audio".to_string());
@@ -505,7 +504,9 @@ fn readme_md(name: &str, capabilities: &ProjectCapabilities, features: &[String]
         capabilities.dimension.component_group()
     )];
     if capabilities.ui {
-        chosen.push("- UI 叠加：`ui`（渲染叠加 + 引擎 UI 系统）".to_string());
+        chosen.push(
+            "- UI 叠加：`ui` + `group-ui`（渲染叠加 + 引擎 UI 系统 + UI 组件组）".to_string(),
+        );
     }
     if capabilities.audio {
         chosen.push("- 音频：`audio`（`AudioEngine` + 音频解码线程）".to_string());
@@ -766,6 +767,15 @@ prism-app = { path = "__PRISM_APP__", default-features = false, features = [__FE
 # prism-app 的 group-* 开关重新打开。
 prism-engine = { path = "__PRISM_ENGINE__", default-features = false }
 prism-scene = { path = "__PRISM_SCENE__", default-features = false }
+
+# 玩家 / Android 打包：体积优先（fat LTO + 单 codegen unit + abort + strip）。
+# 编辑器 / 工具跑在引擎进程内，不能用这个 profile。
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
 "#;
 
 const LIB_RS: &str = r#"//! __NAME__ 的游戏入口。
@@ -800,8 +810,9 @@ __FEATURES__
 __CAPABILITIES__
 
 `group-*` 是**组件组**（决定哪些组件类型注册、serde 代码是否进二进制），
-`ui` / `audio` / `physics` / `pathtrace` 是**运行时能力**。改能力就改 `Cargo.toml` 里
-`prism-app` 的 `features`，然后 `cargo check`。
+`ui` / `audio` / `physics` / `pathtrace` 是**运行时能力**。没勾 UI 时不会带 `group-ui`，
+因此模板场景里也没有 UI 节点。改能力就改 `Cargo.toml` 里 `prism-app` 的 `features`，
+然后 `cargo check`。
 
 ## 目录
 
@@ -813,7 +824,8 @@ __CAPABILITIES__
 ## 运行
 
 ```sh
-cargo run
+cargo run              # 开发构建
+cargo build --profile dist   # 体积优先的发布构建（strip 后的二进制在 target/dist/）
 ```
 
 先构建场景包（在 PrismaRev 仓库根执行）：
@@ -953,27 +965,21 @@ mod tests {
     fn features_follow_the_capability_matrix() {
         assert_eq!(
             caps_2d_ui().features(),
-            ["group-2d", "group-ui", "ui", "x11", "wayland"]
+            ["group-2d", "ui", "group-ui", "x11", "wayland"]
         );
         assert_eq!(
             caps_3d_ui_audio().features(),
-            ["group-3d", "group-ui", "ui", "audio", "x11", "wayland"]
+            ["group-3d", "ui", "group-ui", "audio", "x11", "wayland"]
         );
-        // 「极简」只有维度 + 默认的窗口后端；`group-ui` 是组件组，不是 UI 能力。
-        assert_eq!(
-            caps_2d_minimal().features(),
-            ["group-2d", "group-ui", "x11", "wayland"]
-        );
+        // 「极简」不带 `ui` / `group-ui`：没勾 UI 就不该链接 UI 组件的 serde。
+        assert_eq!(caps_2d_minimal().features(), ["group-2d", "x11", "wayland"]);
         let caps = ProjectCapabilities {
             physics: true,
             pathtrace: true,
             wayland: false,
             ..ProjectCapabilities::default()
         };
-        assert_eq!(
-            caps.features(),
-            ["group-3d", "group-ui", "physics", "pathtrace", "x11"]
-        );
+        assert_eq!(caps.features(), ["group-3d", "physics", "pathtrace", "x11"]);
     }
 
     #[test]
@@ -1111,7 +1117,7 @@ mod tests {
         assert!(generated.game_crate);
         assert_eq!(
             generated.features,
-            ["group-3d", "group-ui", "ui", "audio", "x11", "wayland"]
+            ["group-3d", "ui", "group-ui", "audio", "x11", "wayland"]
         );
 
         let cargo = std::fs::read_to_string(target.join("Cargo.toml")).expect("Cargo.toml");
@@ -1125,7 +1131,7 @@ mod tests {
         );
         assert!(
             cargo.contains(
-                "features = [\"group-3d\", \"group-ui\", \"ui\", \"audio\", \"x11\", \"wayland\"]"
+                "features = [\"group-3d\", \"ui\", \"group-ui\", \"audio\", \"x11\", \"wayland\"]"
             ),
             "{cargo}"
         );
@@ -1160,7 +1166,7 @@ mod tests {
 
         let readme = std::fs::read_to_string(target.join("README.md")).expect("README");
         assert!(
-            readme.contains("group-3d, group-ui, ui, audio, x11, wayland"),
+            readme.contains("group-3d, ui, group-ui, audio, x11, wayland"),
             "{readme}"
         );
         assert!(readme.contains("3D"), "{readme}");
@@ -1179,10 +1185,7 @@ mod tests {
             write_project_skeleton(&target, "Demo", Some(&engine), None, &caps_2d_minimal())
                 .expect("写工程骨架");
 
-        assert_eq!(
-            generated.features,
-            ["group-2d", "group-ui", "x11", "wayland"]
-        );
+        assert_eq!(generated.features, ["group-2d", "x11", "wayland"]);
         let lib = std::fs::read_to_string(target.join("src/lib.rs")).expect("lib.rs");
         assert_eq!(lib.matches("with_subsystem").count(), 1, "{lib}");
         assert!(lib.contains("Subsystem::Render"), "{lib}");

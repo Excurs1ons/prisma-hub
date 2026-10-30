@@ -30,17 +30,21 @@ Hub 是**独立项目**（自己的 Cargo workspace），不依赖 PrismaRev 仓
 
 | 勾选 | feature |
 | --- | --- |
-| 维度 2D / 3D | `group-2d` / `group-3d`（总是同时带 `group-ui` 组件组） |
-| UI 叠加 | `ui`（渲染叠加 + 引擎 UI 系统） |
+| 维度 2D / 3D | `group-2d` / `group-3d` |
+| UI 叠加 | `ui` + `group-ui`（渲染叠加 + 引擎 UI 系统 + UI 组件组） |
 | 音频 | `audio` |
 | 物理 | `physics` |
 | 路径追踪 | `pathtrace`（同时把 `assets/settings.toml` 的 `render_mode` 写成 `path_trace`） |
 | Linux 窗口后端 | `x11` / `wayland`（可多选，默认全选；Linux 上至少要一个） |
 
 `group-*` 是**组件组**（决定哪些组件类型注册），`ui` / `audio` / `physics` / `pathtrace`
-是**运行时能力**，两者不是一回事。生成的 `Cargo.toml` 对 `prism-engine` 与 `prism-scene`
-必须写 `default-features = false`，否则 `prism-scene` 的默认组件组会把 `group-*` 开关
-重新打开。生成后的工程 `README.md` 会列出实际 feature 组合。
+是**运行时能力**，两者不是一回事。不勾 UI 时 `group-ui` 也**不加**：模板场景里没有 UI
+节点，`Node` / `Style` / `Text` 的 serde 与反射代码就没必要进二进制（2D 极简 + 仅 x11 =
+`x11,group-2d`，dist profile strip 后实测 2.83 MB，与引擎 DESIGN.md 的 2.89 MB 档一致）。
+
+生成的 `Cargo.toml` 对 `prism-engine` 与 `prism-scene` 必须写 `default-features = false`，
+否则 `prism-scene` 的默认组件组会把 `group-*` 开关重新打开。生成后的工程 `README.md`
+会列出实际 feature 组合。
 
 ## 定位规则
 

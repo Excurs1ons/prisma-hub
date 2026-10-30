@@ -31,7 +31,8 @@ workspace**，不是 PrismaRev 根 workspace 的成员，也不依赖它的目�
   「升级工程版本」的语义，先改 README 再改代码。
 - 启动编辑器成功后写版本标记是**尽力而为**：失败只 `log::warn!`，不能让打开失败。
 - **能力 → feature 只推导一次**：`projects.rs::ProjectCapabilities::features`。前端只收集
-  勾选、只展示后端回报的列表；生成的 `Cargo.toml` 必须给 `prism-engine` / `prism-scene`
+  勾选、只展示后端回报的列表；勾 UI 才带 `ui` + `group-ui`（不勾就两个都不加，别把 UI
+  组件的 serde 链进极简构建）；生成的 `Cargo.toml` 必须给 `prism-engine` / `prism-scene`
   写 `default-features = false`（否则 `prism-scene` 的默认组件组会把 `group-*` 打开）。
 - `hub.json` 只存用户选择（工程路径 / 手动编辑器 / 默认编辑器 / 源码根）。任何「当前是否
   存在、版本号、场景数」都必须每次从磁盘重新探测。
