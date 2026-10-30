@@ -47,11 +47,28 @@ export type ProjectEntry = {
 
 export type HubEnvironment = {
   platform: "desktop";
+  /** Hub 自己运行的平台：新建工程默认按它推导窗口 / 文本后端。 */
+  hostPlatform: HostPlatform;
   engine: EngineInfo;
   editors: EditorInstall[];
   defaultEditor: string | null;
   storePath: string;
 };
+
+/** Hub 自己运行的平台（Rust 侧 `std::env::consts::OS`）。 */
+export type HostPlatform = "windows" | "linux" | "macos";
+
+/** 向导里的「目标平台」：目录只区分这两档。 */
+export type TargetPlatform = "linux" | "windows";
+
+/** 目标平台 = 宿主平台；未知 / macOS 按 Linux 处理（引擎目录里没有 macOS 专属项）。 */
+export function targetPlatformFor(host: HostPlatform): TargetPlatform {
+  return host === "windows" ? "windows" : "linux";
+}
+
+export function targetPlatformLabel(platform: TargetPlatform): string {
+  return platform === "windows" ? "Windows" : "Linux";
+}
 
 /** 工程维度：决定组件组（`group-2d` / `group-3d`）。 */
 export type ProjectDimension = "2d" | "3d";
@@ -63,9 +80,17 @@ export type ProjectCapabilities = {
   audio: boolean;
   physics: boolean;
   pathtrace: boolean;
-  /** Linux 窗口后端（其它平台忽略）。 */
+  /** Linux 窗口后端（Windows 目标忽略）。 */
   x11: boolean;
   wayland: boolean;
+  /** 目标平台：Windows 才会写 `win32-native` / `ui-directwrite`。 */
+  targetPlatform: TargetPlatform;
+  /** Windows 专属：Win32 原生窗口（不链接 winit，与 winit 后端二选一）。 */
+  win32Native: boolean;
+  /** Windows 专属：DirectWrite 文本（与 `ui-fontdue` 互斥，隐含 `ui`）。 */
+  uiDirectwrite: boolean;
+  /** 体积档位：标准发布 / 极限体积。 */
+  sizeTier: "standard" | "tiny";
 };
 
 /** 新建工程的结果：`features` 是真实写进 `Cargo.toml` 的列表，由后端推导。 */
@@ -101,12 +126,35 @@ export type CapabilityInfo = {
   disabledReason: string | null;
 };
 
-/** 能力目录 + 体积基准。`baselineLabel` / `baselineNote` 是估算的出处，界面要显示。 */
+/** 每个目标平台的基准构建：Linux 与 Windows 的发布包不是同一个量级。 */
+export type PlatformBaseline = {
+  platform: TargetPlatform;
+  kb: number;
+  label: string;
+  note: string;
+};
+
+/** 体积档位（标准发布 / 极限体积）。`sizePercent` 只用于估算，不是实测值。 */
+export type SizeTierInfo = {
+  id: "standard" | "tiny";
+  label: string;
+  summary: string;
+  pros: string[];
+  cons: string[];
+  /** 构建命令原文（界面徽章显示这个）。 */
+  command: string;
+  defaultOn: boolean;
+  /** 相对标准发布的体积百分比（标准 = 100）。 */
+  sizePercent: number;
+  /** 百分比来自哪次实测。 */
+  reference: string;
+};
+
+/** 能力目录 + 体积基准 + 体积档位。基准的出处界面要显示。 */
 export type CapabilityCatalog = {
-  baselineKb: number;
-  baselineLabel: string;
-  baselineNote: string;
+  baselines: PlatformBaseline[];
   entries: CapabilityInfo[];
+  sizeTiers: SizeTierInfo[];
 };
 
 export const hub = {

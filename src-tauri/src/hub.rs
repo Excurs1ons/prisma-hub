@@ -36,6 +36,9 @@ struct HubInner {
 #[serde(rename_all = "camelCase")]
 pub struct HubEnvironment {
     pub platform: &'static str,
+    /// Hub 自己运行的平台（`std::env::consts::OS`）：新建工程默认按它推导窗口 / 文本
+    /// 后端，也就是向导里的「目标平台」。
+    pub host_platform: &'static str,
     pub engine: EngineInfo,
     pub editors: Vec<EditorInstall>,
     /// 实际会使用的默认编辑器（可能来自自动发现，不一定是用户选的）。
@@ -137,6 +140,7 @@ impl HubState {
             .unwrap_or_default();
         HubEnvironment {
             platform: "desktop",
+            host_platform: std::env::consts::OS,
             default_editor: installs
                 .iter()
                 .find(|install| install.is_default)

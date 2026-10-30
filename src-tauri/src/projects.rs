@@ -293,6 +293,79 @@ impl Dimension {
     }
 }
 
+/// 生成工程的目标平台：决定窗口后端与平台专属 feature。
+///
+/// 默认取 Hub 自己运行的平台（见 [`default_target_platform`]）；跨平台构建时由调用方
+/// 显式指定。只有 `linux` / `windows` 两档——这是 `prism-app` 的窗口/文本后端目前
+/// 区分的目标。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+pub enum TargetPlatform {
+    #[default]
+    #[serde(rename = "linux")]
+    Linux,
+    #[serde(rename = "windows")]
+    Windows,
+}
+
+impl TargetPlatform {
+    /// 与能力目录 `platforms` / `baselines[].platform` 的字符串一致。
+    ///
+    /// 生产代码不需要它（目录与推导靠枚举对应），只有目录契约测试拿它去查基准。
+    #[cfg(test)]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Linux => "linux",
+            Self::Windows => "windows",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Linux => "Linux",
+            Self::Windows => "Windows",
+        }
+    }
+}
+
+/// 未指定目标平台时按 Hub 自己运行的平台生成。
+fn default_target_platform() -> TargetPlatform {
+    if cfg!(windows) {
+        TargetPlatform::Windows
+    } else {
+        TargetPlatform::Linux
+    }
+}
+
+/// 体积档位：决定生成哪些 cargo profile。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+pub enum SizeTier {
+    /// 只有 `[profile.dist]`（现状）。
+    #[default]
+    #[serde(rename = "standard")]
+    Standard,
+    /// 额外生成 `[profile.tiny]`（`opt-level = "z"` + fat LTO + 单 codegen unit + abort + strip）。
+    #[serde(rename = "tiny")]
+    Tiny,
+}
+
+impl SizeTier {
+    /// 与能力目录 `sizeTiers[].id` 的字符串一致；只有目录契约测试用。
+    #[cfg(test)]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Tiny => "tiny",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Standard => "标准发布",
+            Self::Tiny => "极限体积",
+        }
+    }
+}
+
 /// 新建工程时勾选的能力。字段名就是前端（`api.ts`）的 JSON 形状。
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -307,11 +380,23 @@ pub struct ProjectCapabilities {
     pub physics: bool,
     #[serde(default)]
     pub pathtrace: bool,
-    /// Linux 窗口后端（`prism-platform` 的 winit 后端；其它平台忽略）。
+    /// Linux 窗口后端（`prism-platform` 的 winit 后端；Windows 目标忽略）。
     #[serde(default = "default_window_backend")]
     pub x11: bool,
     #[serde(default = "default_window_backend")]
     pub wayland: bool,
+    /// 目标平台；默认 = Hub 自己运行的平台。
+    #[serde(default = "default_target_platform")]
+    pub target_platform: TargetPlatform,
+    /// Windows 专属：Win32 原生窗口，**不链接 winit**（与 winit 后端二选一）。
+    #[serde(default)]
+    pub win32_native: bool,
+    /// Windows 专属：DirectWrite 文本光栅（与 `ui-fontdue` 互斥，隐含 `ui`）。
+    #[serde(default)]
+    pub ui_directwrite: bool,
+    /// 体积档位（标准发布 / 极限体积）。
+    #[serde(default)]
+    pub size_tier: SizeTier,
 }
 
 fn default_window_backend() -> bool {
@@ -328,23 +413,40 @@ impl Default for ProjectCapabilities {
             pathtrace: false,
             x11: true,
             wayland: true,
+            target_platform: default_target_platform(),
+            win32_native: false,
+            ui_directwrite: false,
+            size_tier: SizeTier::default(),
         }
     }
 }
 
 impl ProjectCapabilities {
+    /// UI 是否真的启用：`ui` 勾了，或勾了会「自动带 ui」的 DirectWrite。
+    fn ui_enabled(&self) -> bool {
+        self.ui || self.ui_directwrite
+    }
+
     /// 推导 `prism-app` 的 feature 列表（顺序固定，便于比较与展示）。
     ///
     /// - 维度 → `group-2d` / `group-3d`；
     /// - `ui` 才带 `group-ui`：`ui` 是渲染叠加 + 引擎 UI 系统，`group-ui` 是
     ///   `Node` / `Style` / `Text` 的组件组。不勾 UI 时两者都不加——模板场景里没有
     ///   UI 节点，没必要把 UI 组件的 serde / 反射代码链进二进制；
-    /// - 窗口后端只在勾选时追加。
+    /// - 文本光栅后端**互斥**：Windows 目标可以选 `ui-directwrite`，其余走 `ui-fontdue`；
+    /// - 窗口后端按目标平台分开：Linux 是 `x11` / `wayland`，Windows 是
+    ///   `win32-native`（不链接 winit）或默认的 `winit-backend`。选了 `win32-native`
+    ///   时不会再写 `x11` / `wayland`。
     pub fn features(&self) -> Vec<String> {
         let mut features = vec![self.dimension.component_group().to_string()];
-        if self.ui {
+        if self.ui_enabled() {
             features.push("ui".to_string());
             features.push("group-ui".to_string());
+            if self.ui_directwrite && self.target_platform == TargetPlatform::Windows {
+                features.push("ui-directwrite".to_string());
+            } else {
+                features.push("ui-fontdue".to_string());
+            }
         }
         if self.audio {
             features.push("audio".to_string());
@@ -355,11 +457,22 @@ impl ProjectCapabilities {
         if self.pathtrace {
             features.push("pathtrace".to_string());
         }
-        if self.x11 {
-            features.push("x11".to_string());
-        }
-        if self.wayland {
-            features.push("wayland".to_string());
+        match self.target_platform {
+            TargetPlatform::Linux => {
+                if self.x11 {
+                    features.push("x11".to_string());
+                }
+                if self.wayland {
+                    features.push("wayland".to_string());
+                }
+            }
+            TargetPlatform::Windows => {
+                if self.win32_native {
+                    features.push("win32-native".to_string());
+                } else {
+                    features.push("winit-backend".to_string());
+                }
+            }
         }
         features
     }
@@ -376,12 +489,14 @@ impl ProjectCapabilities {
         match id {
             "3d" => Some(self.dimension == Dimension::ThreeD),
             "2d" => Some(self.dimension == Dimension::TwoD),
-            "ui" => Some(self.ui),
+            "ui" => Some(self.ui_enabled()),
             "audio" => Some(self.audio),
             "physics" => Some(self.physics),
             "pathtrace" => Some(self.pathtrace),
             "x11" => Some(self.x11),
             "wayland" => Some(self.wayland),
+            "win32-native" => Some(self.win32_native),
+            "ui-directwrite" => Some(self.ui_directwrite),
             _ => None,
         }
     }
@@ -390,6 +505,9 @@ impl ProjectCapabilities {
     ///
     /// 2D / 3D 是单选组：`apply_option("2d", false)` 等价于切回 3D。与
     /// [`Self::option_state`] 一样，目前由目录契约测试驱动。
+    ///
+    /// 连带规则：勾 `win32-native` 会关掉 `x11` / `wayland`（与 winit 后端二选一）；
+    /// 勾 `ui-directwrite` 会打开 `ui`（它隐含 `ui`）。
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn apply_option(&mut self, id: &str, on: bool) -> bool {
         match id {
@@ -413,14 +531,35 @@ impl ProjectCapabilities {
             "pathtrace" => self.pathtrace = on,
             "x11" => self.x11 = on,
             "wayland" => self.wayland = on,
+            "win32-native" => {
+                self.win32_native = on;
+                if on {
+                    self.x11 = false;
+                    self.wayland = false;
+                }
+            }
+            "ui-directwrite" => {
+                self.ui_directwrite = on;
+                if on {
+                    self.ui = true;
+                }
+            }
             _ => return false,
         }
         true
     }
 
-    /// Linux 上没有任何 winit 后端时生成的程序开不了窗口；其它平台没有这个限制。
+    /// 生成的程序必须能开窗口，平台专属项也不能跨平台。
     pub fn validate(&self) -> Result<(), String> {
-        if cfg!(target_os = "linux") && !self.x11 && !self.wayland {
+        if self.target_platform != TargetPlatform::Windows
+            && (self.win32_native || self.ui_directwrite)
+        {
+            return Err(format!(
+                "{} 目标不支持 Win32 原生窗口 / DirectWrite 文本：这两项只在 Windows 上有效",
+                self.target_platform.label()
+            ));
+        }
+        if self.target_platform == TargetPlatform::Linux && !self.x11 && !self.wayland {
             return Err(
                 "Linux 窗口后端至少要选 x11 或 wayland，否则生成的程序无法开窗口".to_string(),
             );
@@ -484,7 +623,7 @@ pub fn write_project_skeleton(
     let features = capabilities.features();
     write_file(
         &target.join("Cargo.toml"),
-        &cargo_toml(name, engine_root, &features),
+        &cargo_toml(name, engine_root, &features, capabilities.size_tier),
     )?;
     write_file(&target.join("src/lib.rs"), &lib_rs(name, capabilities))?;
     write_file(&target.join("src/main.rs"), &main_rs(name))?;
@@ -498,13 +637,13 @@ pub fn write_project_skeleton(
     })
 }
 
-fn cargo_toml(name: &str, engine_root: &Path, features: &[String]) -> String {
+fn cargo_toml(name: &str, engine_root: &Path, features: &[String], size_tier: SizeTier) -> String {
     let quoted = features
         .iter()
         .map(|feature| format!("\"{feature}\""))
         .collect::<Vec<_>>()
         .join(", ");
-    CARGO_TOML
+    let manifest = CARGO_TOML
         .replace("__PACKAGE__", &crate_name(name))
         .replace(
             "__PRISM_APP__",
@@ -518,14 +657,20 @@ fn cargo_toml(name: &str, engine_root: &Path, features: &[String]) -> String {
             "__PRISM_SCENE__",
             &toml_path(&engine_root.join("crates/prism-scene")),
         )
-        .replace("__FEATURES__", &quoted)
+        .replace("__FEATURES__", &quoted);
+    // 极限体积档才额外生成 `[profile.tiny]`：标准发布保持现状，不多写一段没人用的配置。
+    if size_tier == SizeTier::Tiny {
+        format!("{manifest}{TINY_PROFILE}")
+    } else {
+        manifest
+    }
 }
 
 fn lib_rs(name: &str, capabilities: &ProjectCapabilities) -> String {
     // 只请求真正编译进来的子系统：feature 没开时 `with_subsystem` 是空操作，
     // 写进模板反而会让人以为音频 / 物理已经在跑。
     let mut subsystems = String::from("\n        .with_subsystem(prism_app::Subsystem::Render)");
-    if capabilities.ui {
+    if capabilities.ui_enabled() {
         subsystems.push_str("\n        .with_subsystem(prism_app::Subsystem::UI)");
     }
     if capabilities.audio {
@@ -560,10 +705,17 @@ fn readme_md(name: &str, capabilities: &ProjectCapabilities, features: &[String]
         capabilities.dimension.label(),
         capabilities.dimension.component_group()
     )];
-    if capabilities.ui {
-        chosen.push(
-            "- UI 叠加：`ui` + `group-ui`（渲染叠加 + 引擎 UI 系统 + UI 组件组）".to_string(),
-        );
+    if capabilities.ui_enabled() {
+        let backend = if capabilities.ui_directwrite
+            && capabilities.target_platform == TargetPlatform::Windows
+        {
+            "`ui-directwrite`（Windows 系统 DirectWrite）"
+        } else {
+            "`ui-fontdue`（fontdue + ttf-parser）"
+        };
+        chosen.push(format!(
+            "- UI 叠加：`ui` + `group-ui` + {backend}（渲染叠加 + 引擎 UI 系统 + UI 组件组）"
+        ));
     }
     if capabilities.audio {
         chosen.push("- 音频：`audio`（`AudioEngine` + 音频解码线程）".to_string());
@@ -577,21 +729,48 @@ fn readme_md(name: &str, capabilities: &ProjectCapabilities, features: &[String]
                 .to_string(),
         );
     }
-    let mut backends = Vec::new();
-    if capabilities.x11 {
-        backends.push("x11");
+    match capabilities.target_platform {
+        TargetPlatform::Linux => {
+            let mut backends = Vec::new();
+            if capabilities.x11 {
+                backends.push("x11");
+            }
+            if capabilities.wayland {
+                backends.push("wayland");
+            }
+            chosen.push(format!("- 窗口后端：{}", backends.join(" / ")));
+        }
+        TargetPlatform::Windows => {
+            chosen.push(if capabilities.win32_native {
+                "- 窗口后端：`win32-native`（Win32 原生，不链接 winit）".to_string()
+            } else {
+                "- 窗口后端：`winit-backend`".to_string()
+            });
+        }
     }
-    if capabilities.wayland {
-        backends.push("wayland");
-    }
-    if !backends.is_empty() {
-        chosen.push(format!("- 窗口后端：{}", backends.join(" / ")));
-    }
+    chosen.push(format!(
+        "- 体积档位：{}（{}）",
+        capabilities.size_tier.label(),
+        match capabilities.size_tier {
+            SizeTier::Standard => "`[profile.dist]`",
+            SizeTier::Tiny => "`[profile.dist]` + `[profile.tiny]`，见「发布构建」",
+        }
+    ));
     README_MD
         .replace("__NAME__", name)
         .replace("__DIMENSION__", capabilities.dimension.label())
+        .replace("__PLATFORM__", capabilities.target_platform.label())
         .replace("__CAPABILITIES__", &chosen.join("\n"))
         .replace("__FEATURES__", &features.join(", "))
+        .replace("__SIZE_SECTION__", size_section(capabilities.size_tier))
+}
+
+/// 发布构建说明：标准档只有一句；极限体积档要把命令与代价写全。
+fn size_section(tier: SizeTier) -> &'static str {
+    match tier {
+        SizeTier::Standard => "",
+        SizeTier::Tiny => TINY_README,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -835,6 +1014,22 @@ panic = "abort"
 strip = "symbols"
 "#;
 
+/// 极限体积档：只在勾选「极限体积」时追加到 `Cargo.toml`。
+const TINY_PROFILE: &str = r#"
+# 极限体积档：`opt-level = "z"` 关掉内联与循环展开，配合 nightly
+# `-Z build-std=std,panic_abort` + `-Cpanic=immediate-abort` 使用（命令见 README）。
+# 代价：CPU 热路径慢 10–30%；想兼顾速度就给关键 crate 单独开回 3：
+#   [profile.tiny.package.prism-engine]
+#   opt-level = 3
+[profile.tiny]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+"#;
+
 const LIB_RS: &str = r#"//! __NAME__ 的游戏入口。
 
 /// 构造应用：引擎负责窗口与渲染；项目 system 可以在这里注册。
@@ -852,7 +1047,7 @@ fn main() {
 
 const README_MD: &str = r#"# __NAME__
 
-PrismaRev 用户工程（__DIMENSION__）。
+PrismaRev 用户工程（__DIMENSION__，__PLATFORM__ 目标）。
 
 ## 能力
 
@@ -884,7 +1079,7 @@ __CAPABILITIES__
 cargo run              # 开发构建
 cargo build --profile dist   # 体积优先的发布构建（strip 后的二进制在 target/dist/）
 ```
-
+__SIZE_SECTION__
 先构建场景包（在 PrismaRev 仓库根执行）：
 
 ```sh
@@ -893,6 +1088,40 @@ cargo run -p prism-build-pipeline -- build-scenes \
   --staging <本工程>/target/scene_pack \
   --output <本工程>/assets/scenes.pak
 ```
+"#;
+
+/// 极限体积档的 README 片段：命令、实测与**代价**缺一不可。
+const TINY_README: &str = r#"
+## 发布构建（极限体积）
+
+`[profile.tiny]` 已生成（`opt-level = "z"` + fat LTO + 单 codegen unit + `panic = "abort"` +
+strip）。再拿回 std 的部分：
+
+```sh
+TARGET=$(rustc -vV | sed -n 's/^host: //p')
+RUSTFLAGS="-Zunstable-options -Cpanic=immediate-abort \
+  -C llvm-args=-inline-threshold=0 -C llvm-args=-inlinehint-threshold=0" \
+  cargo +nightly build --profile tiny --target "$TARGET" \
+  -Z build-std=std,panic_abort
+```
+
+需要 `rustup`（`rustup toolchain install nightly --profile minimal` +
+`rustup component add rust-src --toolchain nightly`）；`-Z build-std` 让 std 与工程一起走
+fat LTO，`-Cpanic=immediate-abort` 再删掉 panic 格式化。参数只走命令行，所以日常
+`cargo run` 仍是 stable。
+
+实测：3D 全量 4.47 MB → 2.70 MB（−40%）。
+
+**代价（务必先读）**：禁内联后 CPU 热路径慢 10–30%，CPU-bound 场景掉帧明显
+（GPU-bound 基本无感）。想让关键模块保持速度：
+
+```toml
+[profile.tiny.package.prism-engine]
+opt-level = 3
+```
+
+现实区间是 **2.5–3.2 MB**。这不是竞赛级 64k——那种体积靠 `no_std` + 手写系统 API +
+可执行压缩器，和这里的编译参数不是一回事，别把它宣传成 64k。
 "#;
 
 const NO_CRATE_README: &str = r#"# 新工程
@@ -990,6 +1219,7 @@ mod tests {
         ProjectCapabilities {
             dimension: Dimension::TwoD,
             ui: true,
+            target_platform: TargetPlatform::Linux,
             ..ProjectCapabilities::default()
         }
     }
@@ -999,6 +1229,7 @@ mod tests {
             dimension: Dimension::ThreeD,
             ui: true,
             audio: true,
+            target_platform: TargetPlatform::Linux,
             ..ProjectCapabilities::default()
         }
     }
@@ -1006,6 +1237,15 @@ mod tests {
     fn caps_2d_minimal() -> ProjectCapabilities {
         ProjectCapabilities {
             dimension: Dimension::TwoD,
+            target_platform: TargetPlatform::Linux,
+            ..ProjectCapabilities::default()
+        }
+    }
+
+    /// Windows 目标：默认 winit 后端，可换成 Win32 原生窗口。
+    fn caps_windows_minimal() -> ProjectCapabilities {
+        ProjectCapabilities {
+            target_platform: TargetPlatform::Windows,
             ..ProjectCapabilities::default()
         }
     }
@@ -1022,11 +1262,19 @@ mod tests {
     fn features_follow_the_capability_matrix() {
         assert_eq!(
             caps_2d_ui().features(),
-            ["group-2d", "ui", "group-ui", "x11", "wayland"]
+            ["group-2d", "ui", "group-ui", "ui-fontdue", "x11", "wayland"]
         );
         assert_eq!(
             caps_3d_ui_audio().features(),
-            ["group-3d", "ui", "group-ui", "audio", "x11", "wayland"]
+            [
+                "group-3d",
+                "ui",
+                "group-ui",
+                "ui-fontdue",
+                "audio",
+                "x11",
+                "wayland"
+            ]
         );
         // 「极简」不带 `ui` / `group-ui`：没勾 UI 就不该链接 UI 组件的 serde。
         assert_eq!(caps_2d_minimal().features(), ["group-2d", "x11", "wayland"]);
@@ -1034,26 +1282,88 @@ mod tests {
             physics: true,
             pathtrace: true,
             wayland: false,
+            target_platform: TargetPlatform::Linux,
             ..ProjectCapabilities::default()
         };
         assert_eq!(caps.features(), ["group-3d", "physics", "pathtrace", "x11"]);
     }
 
     #[test]
+    fn windows_target_switches_the_window_backend() {
+        // 不勾 Win32 原生窗口时仍是 winit；Windows 上不再写 x11 / wayland。
+        assert_eq!(
+            caps_windows_minimal().features(),
+            ["group-3d", "winit-backend"]
+        );
+        let caps = ProjectCapabilities {
+            win32_native: true,
+            ..caps_windows_minimal()
+        };
+        assert_eq!(caps.features(), ["group-3d", "win32-native"]);
+        // 勾了 win32-native 也不会把 x11 / wayland 带进去（规则要求）。
+        let caps = ProjectCapabilities {
+            win32_native: true,
+            x11: true,
+            wayland: true,
+            ..caps_windows_minimal()
+        };
+        assert_eq!(caps.features(), ["group-3d", "win32-native"]);
+    }
+
+    #[test]
+    fn directwrite_replaces_fontdue_and_implies_ui() {
+        let caps = ProjectCapabilities {
+            ui_directwrite: true,
+            ..caps_windows_minimal()
+        };
+        assert!(!caps.ui, "字段本身不必写 ui，但推导必须带上");
+        assert_eq!(
+            caps.features(),
+            [
+                "group-3d",
+                "ui",
+                "group-ui",
+                "ui-directwrite",
+                "winit-backend"
+            ]
+        );
+        assert_eq!(caps.option_state("ui"), Some(true));
+        // 文本后端互斥：永远不会同时出现。
+        for caps in [
+            caps_2d_ui(),
+            ProjectCapabilities {
+                ui_directwrite: true,
+                ..caps_windows_minimal()
+            },
+        ] {
+            let features = caps.features();
+            let fontdue = features.iter().filter(|f| *f == "ui-fontdue").count();
+            let directwrite = features.iter().filter(|f| *f == "ui-directwrite").count();
+            assert_eq!(fontdue + directwrite, 1, "{features:?}");
+        }
+    }
+
+    #[test]
     fn capabilities_deserialize_from_the_frontend_shape() {
         let caps: ProjectCapabilities = serde_json::from_str(
-            r#"{"dimension":"2d","ui":true,"audio":false,"physics":false,"pathtrace":false,"x11":true,"wayland":false}"#,
+            r#"{"dimension":"2d","ui":true,"audio":false,"physics":false,"pathtrace":false,"x11":true,"wayland":false,"targetPlatform":"windows","win32Native":true,"uiDirectwrite":true,"sizeTier":"tiny"}"#,
         )
         .expect("前端 JSON 必须能反序列化");
         assert_eq!(caps.dimension, Dimension::TwoD);
         assert!(caps.ui);
         assert!(!caps.wayland);
+        assert_eq!(caps.target_platform, TargetPlatform::Windows);
+        assert!(caps.win32_native && caps.ui_directwrite);
+        assert_eq!(caps.size_tier, SizeTier::Tiny);
 
-        // 缺字段时默认 3D + 两个窗口后端。
+        // 缺字段时默认 3D + 两个窗口后端 + 宿主平台 + 标准发布。
         let caps: ProjectCapabilities = serde_json::from_str("{}").expect("空对象也能反序列化");
         assert_eq!(caps.dimension, Dimension::ThreeD);
         assert!(caps.x11 && caps.wayland);
         assert!(!caps.ui && !caps.audio && !caps.physics && !caps.pathtrace);
+        assert!(!caps.win32_native && !caps.ui_directwrite);
+        assert_eq!(caps.target_platform, default_target_platform());
+        assert_eq!(caps.size_tier, SizeTier::Standard);
     }
 
     #[test]
@@ -1061,12 +1371,14 @@ mod tests {
         let none = ProjectCapabilities {
             x11: false,
             wayland: false,
+            target_platform: TargetPlatform::Linux,
             ..ProjectCapabilities::default()
         };
-        assert_eq!(none.validate().is_ok(), !cfg!(target_os = "linux"));
+        assert!(none.validate().is_err());
         assert!(ProjectCapabilities {
             x11: true,
             wayland: false,
+            target_platform: TargetPlatform::Linux,
             ..ProjectCapabilities::default()
         }
         .validate()
@@ -1174,7 +1486,15 @@ mod tests {
         assert!(generated.game_crate);
         assert_eq!(
             generated.features,
-            ["group-3d", "ui", "group-ui", "audio", "x11", "wayland"]
+            [
+                "group-3d",
+                "ui",
+                "group-ui",
+                "ui-fontdue",
+                "audio",
+                "x11",
+                "wayland"
+            ]
         );
 
         let cargo = std::fs::read_to_string(target.join("Cargo.toml")).expect("Cargo.toml");
@@ -1188,7 +1508,7 @@ mod tests {
         );
         assert!(
             cargo.contains(
-                "features = [\"group-3d\", \"ui\", \"group-ui\", \"audio\", \"x11\", \"wayland\"]"
+                "features = [\"group-3d\", \"ui\", \"group-ui\", \"ui-fontdue\", \"audio\", \"x11\", \"wayland\"]"
             ),
             "{cargo}"
         );
@@ -1223,10 +1543,13 @@ mod tests {
 
         let readme = std::fs::read_to_string(target.join("README.md")).expect("README");
         assert!(
-            readme.contains("group-3d, ui, group-ui, audio, x11, wayland"),
+            readme.contains("group-3d, ui, group-ui, ui-fontdue, audio, x11, wayland"),
             "{readme}"
         );
         assert!(readme.contains("3D"), "{readme}");
+        // 标准发布档不写极限体积教程。
+        assert!(!cargo.contains("[profile.tiny]"), "{cargo}");
+        assert!(!readme.contains("build-std"), "{readme}");
 
         assert_eq!(read_project_version(&target).as_deref(), Some("1.0.0"));
         assert!(structure_of(&target).game_crate);
@@ -1264,14 +1587,88 @@ mod tests {
         let caps = ProjectCapabilities {
             x11: false,
             wayland: false,
+            target_platform: TargetPlatform::Linux,
             ..ProjectCapabilities::default()
         };
         let result = write_project_skeleton(&target, "Demo", None, None, &caps);
-        if cfg!(target_os = "linux") {
-            assert!(result.is_err());
-            assert!(!target.exists());
-        } else {
-            assert!(result.is_ok());
-        }
+        assert!(result.is_err());
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn windows_only_options_are_rejected_on_linux_targets() {
+        let root = scratch("skeleton-win32-on-linux");
+        let target = root.join("demo");
+        let caps = ProjectCapabilities {
+            target_platform: TargetPlatform::Linux,
+            win32_native: true,
+            ..ProjectCapabilities::default()
+        };
+        assert!(write_project_skeleton(&target, "Demo", None, None, &caps).is_err());
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn tiny_tier_writes_the_profile_and_the_build_recipe() {
+        let root = scratch("skeleton-tiny");
+        let engine = root.join("PrismaRev");
+        let target = root.join("demo");
+        let caps = ProjectCapabilities {
+            size_tier: SizeTier::Tiny,
+            ..caps_2d_minimal()
+        };
+
+        let generated =
+            write_project_skeleton(&target, "Demo", Some(&engine), None, &caps).expect("写骨架");
+        assert_eq!(generated.features, ["group-2d", "x11", "wayland"]);
+
+        let cargo = std::fs::read_to_string(target.join("Cargo.toml")).expect("Cargo.toml");
+        assert!(cargo.contains("[profile.dist]"), "{cargo}");
+        assert!(cargo.contains("[profile.tiny]"), "{cargo}");
+        assert!(cargo.contains("opt-level = \"z\""), "{cargo}");
+        assert!(cargo.contains("codegen-units = 1"), "{cargo}");
+        assert!(cargo.contains("panic = \"abort\""), "{cargo}");
+
+        let readme = std::fs::read_to_string(target.join("README.md")).expect("README");
+        assert!(readme.contains("build-std=std,panic_abort"), "{readme}");
+        assert!(readme.contains("immediate-abort"), "{readme}");
+        assert!(readme.contains("10–30%"), "{readme}");
+        assert!(readme.contains("2.5–3.2 MB"), "{readme}");
+        assert!(readme.contains("64k"), "{readme}");
+        assert!(readme.contains("2.70 MB"), "{readme}");
+    }
+
+    #[test]
+    fn windows_project_readme_matches_the_feature_list() {
+        let root = scratch("skeleton-windows");
+        let engine = root.join("PrismaRev");
+        let target = root.join("demo");
+        let caps = ProjectCapabilities {
+            ui_directwrite: true,
+            win32_native: true,
+            ..caps_windows_minimal()
+        };
+
+        let generated =
+            write_project_skeleton(&target, "Demo", Some(&engine), None, &caps).expect("写骨架");
+        assert_eq!(
+            generated.features,
+            [
+                "group-3d",
+                "ui",
+                "group-ui",
+                "ui-directwrite",
+                "win32-native"
+            ]
+        );
+
+        let readme = std::fs::read_to_string(target.join("README.md")).expect("README");
+        assert!(readme.contains("Windows 目标"), "{readme}");
+        assert!(readme.contains("win32-native"), "{readme}");
+        assert!(readme.contains("ui-directwrite"), "{readme}");
+        assert!(!readme.contains("x11"), "{readme}");
+
+        let lib = std::fs::read_to_string(target.join("src/lib.rs")).expect("lib.rs");
+        assert!(lib.contains("Subsystem::UI"), "{lib}");
     }
 }

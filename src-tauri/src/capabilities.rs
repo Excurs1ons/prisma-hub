@@ -21,6 +21,24 @@
 //!
 //! 数字宁可写「未实测」也不要估算完当实测：`audio` / `wayland` 的「约」、
 //! `physics` 的「未精确实测」都保留在 `cost` 原文里。
+//!
+//! ## 平台专属项
+//!
+//! `win32-native` / `ui-directwrite` 带 `platforms: ["windows"]`：目标平台不是 Windows
+//! 时界面不显示、`features()` 也不会写。数字来自 Windows `x86_64-pc-windows-gnu`、
+//! `dist` + strip 实测（见 PrismaRev `docs/DESIGN.md` §12.2 / §12.4）：
+//!
+//! - `winit` 窗口 3,146,240 B → Win32 原生 2,978,816 B（−163.5 KiB）；
+//! - fontdue 文本 3,145,728 B → DirectWrite 3,084,288 B（−60 KiB）。
+//!
+//! 目录统一按整数 KB 记（`baseline_kb` / `size_delta_kb`），上面两个增量取整成
+//! −164 / −60，原文放在 `cost` 里；估算一律标「估算」。
+//!
+//! ## 体积档位
+//!
+//! [`CapabilityCatalog::size_tiers`] 描述标准发布 / 极限体积两档。`size_percent` 只是
+//! 把引擎已量出的「3D 全量 4.47 MB → 2.70 MB（−40%）」比例套到当前组合上，
+//! 界面必须继续标「估算」，并且不能把极限体积档说成竞赛级 64k。
 
 use serde::Serialize;
 
@@ -59,17 +77,52 @@ pub struct CapabilityInfo {
     pub disabled_reason: Option<&'static str>,
 }
 
-/// 向导用的完整目录：基准值 + 每一项。
+/// 每个目标平台的基准构建。
+///
+/// Linux 与 Windows 的发布包不是同一个量级，所以基准按平台分开给——否则 Windows
+/// 工程的「预计体积」会拿 Linux 的 4.47 MB 当底。`platform` 与
+/// [`crate::projects::TargetPlatform`] 的 serde 名一致。
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformBaseline {
+    pub platform: &'static str,
+    /// 基准构建的体积（KB）。
+    pub kb: i64,
+    /// 基准构建包含什么（界面要显示来源，不能只给一个数字）。
+    pub label: &'static str,
+    /// 基准是怎么量出来的，以及为什么累加结果是估算。
+    pub note: &'static str,
+}
+
+/// 体积档位：标准发布 / 极限体积。
+///
+/// `size_percent` 只是把实测比例套到当前勾选组合上的**估算系数**，不是每个组合的
+/// 实测值；界面必须标「估算」，并显示 [`Self::reference`]。
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SizeTierInfo {
+    /// 与 [`crate::projects::SizeTier`] 的 serde 名一致（`standard` / `tiny`）。
+    pub id: &'static str,
+    pub label: &'static str,
+    pub summary: &'static str,
+    pub pros: &'static [&'static str],
+    pub cons: &'static [&'static str],
+    /// 构建命令原文（界面徽章显示这个，不是体积）。
+    pub command: &'static str,
+    pub default_on: bool,
+    /// 相对标准发布的体积百分比（标准 = 100）。只参与估算。
+    pub size_percent: u32,
+    /// 百分比来自哪次实测。
+    pub reference: &'static str,
+}
+
+/// 向导用的完整目录：各平台基准 + 每一项能力 + 体积档位。
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CapabilityCatalog {
-    /// 基准构建的体积（KB）。
-    pub baseline_kb: i64,
-    /// 基准构建包含什么（界面要显示来源，不能只给一个数字）。
-    pub baseline_label: &'static str,
-    /// 基准是怎么量出来的，以及为什么累加结果是估算。
-    pub baseline_note: &'static str,
+    pub baselines: &'static [PlatformBaseline],
     pub entries: &'static [CapabilityInfo],
+    pub size_tiers: &'static [SizeTierInfo],
 }
 
 const LINUX: &[&str] = &["linux"];
@@ -77,12 +130,60 @@ const WINDOWS: &[&str] = &["windows"];
 
 /// 唯一的目录数据源。`size_delta_kb` 的符号与量级和 `cost` 原文必须一致。
 pub const CATALOG: CapabilityCatalog = CapabilityCatalog {
-    baseline_kb: 4470,
-    baseline_label: "3D 全量 + x11 + wayland + ui",
-    baseline_note:
-        "dist profile、strip、Linux aarch64 实测；其余项按单项实测或依赖体积累加，属估算",
+    baselines: BASELINES,
     entries: ENTRIES,
+    size_tiers: SIZE_TIERS,
 };
+
+const BASELINES: &[PlatformBaseline] = &[
+    PlatformBaseline {
+        platform: "linux",
+        kb: 4470,
+        label: "3D 全量 + x11 + wayland + ui",
+        note: "dist profile、strip、Linux aarch64 实测；其余项按单项实测或依赖体积累加，属估算",
+    },
+    PlatformBaseline {
+        platform: "windows",
+        // 3,146,240 B ≈ 3073 KiB（winit 窗口、dist + strip）。
+        kb: 3073,
+        label: "Windows 3D 全量 + winit 窗口（3,146,240 字节）",
+        note: "x86_64-pc-windows-gnu、dist + strip 实测基准；单项增量沿用 Linux 实测，属估算",
+    },
+];
+
+const SIZE_TIERS: &[SizeTierInfo] = &[
+    SizeTierInfo {
+        id: "standard",
+        label: "标准发布",
+        summary: "只生成 `[profile.dist]`（fat LTO + 单 codegen unit + abort + strip）",
+        pros: &["stable 工具链直接可用，日常调试与发布同一条命令"],
+        cons: &["比极限体积档大约多 40%"],
+        command: "cargo build --profile dist",
+        default_on: true,
+        size_percent: 100,
+        reference: "dist profile、strip 实测（3D 全量 4.47 MB）",
+    },
+    SizeTierInfo {
+        id: "tiny",
+        label: "极限体积",
+        summary:
+            "额外生成 `[profile.tiny]`：`opt-level = \"z\"` + fat LTO + 单 codegen unit + abort + strip",
+        pros: &[
+            "3D 全量 4.47 MB → 2.70 MB（−40%）",
+            "配合 nightly `-Z build-std` + immediate-abort 再省 std 与 panic 格式化",
+        ],
+        cons: &[
+            "禁内联后 CPU 热路径慢 10–30%，CPU-bound 场景明显",
+            "需要 nightly + rust-src；日常 `cargo run` 仍是 stable",
+            "现实区间 2.5–3.2 MB，不是竞赛级 64k",
+        ],
+        command: "cargo +nightly build --profile tiny",
+        default_on: false,
+        // 3D 全量 4.47 MB → 2.70 MB ≈ −40%。
+        size_percent: 60,
+        reference: "aarch64 Linux、3D 全量实测：4.47 MB → 2.70 MB（−40%）",
+    },
+];
 
 const ENTRIES: &[CapabilityInfo] = &[
     CapabilityInfo {
@@ -121,9 +222,12 @@ const ENTRIES: &[CapabilityInfo] = &[
     CapabilityInfo {
         id: "ui",
         label: "UI 叠加",
-        summary: "文本 / HUD / 调试叠加（`ui` + `group-ui`）",
+        summary: "文本 / HUD / 调试叠加（`ui` + `group-ui` + 文本后端）",
         pros: &["文本 / HUD / 调试叠加", "模板场景会附带一个示例标签"],
-        cons: &["关掉后没有文字渲染，只剩几何"],
+        cons: &[
+            "关掉后没有文字渲染，只剩几何",
+            "文本后端默认 fontdue；Windows 可换成 DirectWrite（见下一项）",
+        ],
         cost: "−64 KB（关掉时）",
         default_on: false,
         platforms: &[],
@@ -217,59 +321,90 @@ const ENTRIES: &[CapabilityInfo] = &[
     CapabilityInfo {
         id: "win32-native",
         label: "Win32 原生窗口",
-        summary: "自带 Win32 窗口，绕开 winit（仅 Windows）",
-        pros: &["预计 −375 KB"],
-        cons: &["引擎侧开发中，尚未接线", "只影响 Windows"],
-        cost: "预计 −375 KB（未实测）",
+        summary: "自带 Win32 窗口后端（仅 Windows），发布包不再链接 winit",
+        pros: &[
+            "Windows 发布包 −163.5 KiB（3,146,240 → 2,978,816 字节）",
+            "依赖树里 winit 计数为 0；消息泵自己实现，不依赖 winit 事件循环",
+        ],
+        cons: &[
+            "与 winit 后端二选一：勾选后不再写 `x11` / `wayland`",
+            "没有 IME / 拖放（DnD）/ 多显示器 DPI 平滑，需真机验证",
+        ],
+        cost: "−163.5 KiB（3,146,240 → 2,978,816 字节，Windows dist + strip）",
         default_on: false,
         platforms: WINDOWS,
-        enabled: false,
+        enabled: true,
         kind: CapabilityKind::Feature,
         baseline_on: false,
-        size_delta_kb: None,
-        disabled_reason: Some("引擎侧开发中：窗口后端还没从 winit 切出来，勾选不会写进 feature。"),
+        // −163.5 KiB，目录统一按整数 KB 记，取整成 −164。
+        size_delta_kb: Some(-164),
+        disabled_reason: None,
     },
     CapabilityInfo {
         id: "ui-directwrite",
         label: "DirectWrite 文本",
-        summary: "用 Windows 原生文本栈渲染 UI（仅 Windows）",
-        pros: &["预计 −60~90 KB"],
-        cons: &["引擎侧开发中，尚未接线", "只影响 Windows"],
-        cost: "预计 −60~90 KB（未实测）",
+        summary: "用 Windows 系统 DirectWrite 光栅字形，代替 fontdue（仅 Windows）",
+        pros: &[
+            "Windows 发布包 −60 KiB（3,145,728 → 3,084,288 字节）",
+            "用系统字体；fontdue / ttf-parser 不进二进制（勾选时自动带 `ui`）",
+        ],
+        cons: &[
+            "仅 Windows 目标（其它平台开它会编译失败）",
+            "只做单字形查表，不支持复杂文本整形（阿拉伯 / 印度语系连写、kerning、Emoji）",
+            "真机需确认灰度 AA 清晰度与字体回退",
+        ],
+        cost: "−60 KiB（3,145,728 → 3,084,288 字节，Windows dist + build-std）",
         default_on: false,
         platforms: WINDOWS,
-        enabled: false,
+        enabled: true,
         kind: CapabilityKind::Feature,
         baseline_on: false,
-        size_delta_kb: None,
-        disabled_reason: Some(
-            "引擎侧开发中：文本后端还没有 DirectWrite 分支，勾选不会写进 feature。",
-        ),
+        // 61,440 B = 60 KiB。
+        size_delta_kb: Some(-60),
+        disabled_reason: None,
     },
 ];
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::projects::{Dimension, ProjectCapabilities};
+    use crate::projects::{Dimension, ProjectCapabilities, SizeTier, TargetPlatform};
 
     /// 目录 id 应当推导出的 feature。和 `ProjectCapabilities::features` 是同一份契约。
     fn expected_features(id: &str) -> &'static [&'static str] {
         match id {
             "3d" => &["group-3d"],
             "2d" => &["group-2d"],
-            "ui" => &["ui", "group-ui"],
+            "ui" => &["ui", "group-ui", "ui-fontdue"],
             "audio" => &["audio"],
             "physics" => &["physics"],
             "pathtrace" => &["pathtrace"],
             "x11" => &["x11"],
             "wayland" => &["wayland"],
+            "win32-native" => &["win32-native"],
+            "ui-directwrite" => &["ui", "group-ui", "ui-directwrite"],
             _ => &[],
         }
     }
 
-    fn caps_with(ids: &[&str]) -> ProjectCapabilities {
-        let mut caps = ProjectCapabilities::default();
+    /// 平台专属项要在它自己的目标平台上才推导得出来。
+    fn caps_for(info: &CapabilityInfo) -> ProjectCapabilities {
+        let target_platform = if info.platforms.contains(&"windows") {
+            TargetPlatform::Windows
+        } else {
+            TargetPlatform::Linux
+        };
+        ProjectCapabilities {
+            target_platform,
+            ..ProjectCapabilities::default()
+        }
+    }
+
+    fn caps_on(target: TargetPlatform, ids: &[&str]) -> ProjectCapabilities {
+        let mut caps = ProjectCapabilities {
+            target_platform: target,
+            ..ProjectCapabilities::default()
+        };
         for id in ids {
             assert!(caps.apply_option(id, true), "{id} 应当已接线");
         }
@@ -288,12 +423,28 @@ mod tests {
         }
     }
 
-    /// 与前端 `estimate` 同一套算法：基准值 + 偏离基准的项的增量。
+    fn baseline(catalog: &CapabilityCatalog, target: TargetPlatform) -> i64 {
+        catalog
+            .baselines
+            .iter()
+            .find(|baseline| baseline.platform == target.as_str())
+            .unwrap_or_else(|| panic!("目录缺少 {} 的基准", target.as_str()))
+            .kb
+    }
+
+    /// 这一项对目标平台是否适用（空 `platforms` = 全平台）。
+    fn applies(info: &CapabilityInfo, target: TargetPlatform) -> bool {
+        info.platforms.is_empty() || info.platforms.contains(&target.as_str())
+    }
+
+    /// 与前端 `estimate` 同一套算法：平台基准 + 偏离基准的项的增量。
     fn estimate(catalog: &CapabilityCatalog, caps: &ProjectCapabilities) -> i64 {
+        let target = caps.target_platform;
         catalog
             .entries
             .iter()
-            .fold(catalog.baseline_kb, |kb, info| {
+            .filter(|info| applies(info, target))
+            .fold(baseline(catalog, target), |kb, info| {
                 let (Some(delta), Some(state)) = (info.size_delta_kb, caps.option_state(info.id))
                 else {
                     return kb;
@@ -358,21 +509,22 @@ mod tests {
                 "维度目录缺少 {id}"
             );
         }
-        // 尚未接线的两项必须留在目录里（置灰展示），不能悄悄删掉。
+        // Windows 专属的两项已经在引擎侧接线，必须可选（不能再置灰）。
         for id in ["win32-native", "ui-directwrite"] {
             let info = CATALOG
                 .entries
                 .iter()
                 .find(|info| info.id == id)
                 .unwrap_or_else(|| panic!("目录缺少 {id}"));
-            assert!(!info.enabled, "{id} 现在还不该接线");
+            assert!(info.enabled, "{id} 已接线，应当可选");
+            assert_eq!(info.platforms, WINDOWS, "{id} 只影响 Windows");
         }
     }
 
     #[test]
     fn every_catalog_id_is_recognised_by_the_derivation() {
         for info in CATALOG.entries {
-            let mut caps = ProjectCapabilities::default();
+            let mut caps = caps_for(info);
             let applied = caps.apply_option(info.id, true);
             assert_eq!(
                 applied, info.enabled,
@@ -380,12 +532,7 @@ mod tests {
                 info.id
             );
             if !info.enabled {
-                assert_eq!(
-                    caps,
-                    ProjectCapabilities::default(),
-                    "{} 未接线，却改了能力状态",
-                    info.id
-                );
+                assert_eq!(caps, caps_for(info), "{} 未接线，却改了能力状态", info.id);
                 continue;
             }
             assert_eq!(
@@ -439,6 +586,10 @@ mod tests {
         assert_eq!(caps.features(), before, "置灰项不能改变任何 feature");
     }
 
+    fn caps_with(ids: &[&str]) -> ProjectCapabilities {
+        caps_on(TargetPlatform::Linux, ids)
+    }
+
     #[test]
     fn dimension_options_are_mutually_exclusive() {
         let mut caps = caps_with(&["2d"]);
@@ -454,12 +605,128 @@ mod tests {
     }
 
     #[test]
+    fn windows_options_replace_the_linux_backends() {
+        // 选了 win32-native 就不再写 x11 / wayland，也不写 winit-backend。
+        let caps = caps_on(
+            TargetPlatform::Windows,
+            &["3d", "ui", "win32-native", "ui-directwrite"],
+        );
+        let features = caps.features();
+        for feature in ["win32-native", "ui-directwrite", "ui-fontdue"] {
+            let expected = !matches!(feature, "ui-fontdue");
+            assert_eq!(
+                features.iter().any(|item| item == feature),
+                expected,
+                "{feature}：{features:?}"
+            );
+        }
+        for feature in ["x11", "wayland", "winit-backend"] {
+            assert!(
+                !features.iter().any(|item| item == feature),
+                "选了 win32-native 不该再写 {feature}：{features:?}"
+            );
+        }
+
+        // 不选 win32-native 时仍然是 winit（Windows 上的默认后端）。
+        let caps = caps_on(TargetPlatform::Windows, &["3d"]);
+        assert_eq!(caps.features(), ["group-3d", "winit-backend"]);
+    }
+
+    #[test]
+    fn text_backends_are_mutually_exclusive() {
+        let cases = [
+            (TargetPlatform::Linux, false),
+            (TargetPlatform::Windows, false),
+            (TargetPlatform::Windows, true),
+        ];
+        for (target, directwrite) in cases {
+            let mut caps = caps_on(target, &["ui"]);
+            caps.ui_directwrite = directwrite;
+            let features = caps.features();
+            let fontdue = features.iter().filter(|item| *item == "ui-fontdue").count();
+            let dw = features
+                .iter()
+                .filter(|item| *item == "ui-directwrite")
+                .count();
+            assert_eq!(fontdue + dw, 1, "{target:?}: {features:?}");
+            assert_eq!(dw, usize::from(directwrite), "{target:?}: {features:?}");
+        }
+    }
+
+    #[test]
+    fn ui_directwrite_implies_ui() {
+        let mut caps = caps_on(TargetPlatform::Windows, &[]);
+        assert!(caps.apply_option("ui-directwrite", true));
+        assert!(caps.ui);
+        assert_eq!(caps.option_state("ui"), Some(true));
+        let features = caps.features();
+        assert!(features.contains(&"ui".to_string()), "{features:?}");
+        assert!(features.contains(&"group-ui".to_string()), "{features:?}");
+    }
+
+    #[test]
+    fn platform_specific_options_never_leak_to_the_other_platform() {
+        let mut caps = caps_on(TargetPlatform::Linux, &["3d"]);
+        caps.win32_native = true;
+        caps.ui_directwrite = true;
+        let features = caps.features();
+        assert!(
+            !features
+                .iter()
+                .any(|item| item == "win32-native" || item == "ui-directwrite"),
+            "{features:?}"
+        );
+        // `ui-directwrite` 隐含 `ui`，但在 Linux 上会被换成 fontdue；这种组合本身
+        // 会被 `validate()` 拒绝，`features()` 只是不写平台专属项。
+        assert!(
+            features.iter().any(|item| item == "ui-fontdue"),
+            "{features:?}"
+        );
+
+        let mut caps = caps_on(TargetPlatform::Windows, &["3d"]);
+        caps.x11 = true;
+        caps.wayland = true;
+        let features = caps.features();
+        assert!(
+            !features
+                .iter()
+                .any(|item| item == "x11" || item == "wayland"),
+            "{features:?}"
+        );
+    }
+
+    #[test]
+    fn windows_only_options_are_rejected_on_linux() {
+        let caps = ProjectCapabilities {
+            win32_native: true,
+            ..ProjectCapabilities::default()
+        };
+        assert!(caps.validate().is_err());
+        let caps = ProjectCapabilities {
+            ui_directwrite: true,
+            ..ProjectCapabilities::default()
+        };
+        assert!(caps.validate().is_err());
+        // Windows 目标不要求 x11 / wayland。
+        let caps = ProjectCapabilities {
+            target_platform: TargetPlatform::Windows,
+            x11: false,
+            wayland: false,
+            ..ProjectCapabilities::default()
+        };
+        assert!(caps.validate().is_ok());
+    }
+
+    #[test]
     fn baseline_estimate_reproduces_the_reference_build() {
         // 基准 = 3D 全量 + x11 + wayland + ui（= 4.47 MB，`pathtrace` 也在基准里：
         // 表里的成本是「关掉时 −132 KB」量出来的）。
         let caps = caps_with(&["3d", "ui", "pathtrace", "x11", "wayland"]);
-        assert_eq!(estimate(&CATALOG, &caps), CATALOG.baseline_kb);
-        assert_eq!(CATALOG.baseline_kb, 4470);
+        assert_eq!(
+            estimate(&CATALOG, &caps),
+            baseline(&CATALOG, TargetPlatform::Linux)
+        );
+        assert_eq!(baseline(&CATALOG, TargetPlatform::Linux), 4470);
     }
 
     #[test]
@@ -482,6 +749,74 @@ mod tests {
         assert_eq!(estimate(&CATALOG, &x11_only), 4470 - 64 - 132 - 1100);
     }
 
+    #[test]
+    fn windows_estimates_use_the_windows_baseline() {
+        // Windows 基准 = 3D 全量 + winit（3,146,240 B ≈ 3073 KiB）。
+        let caps = {
+            let mut caps = caps_on(TargetPlatform::Windows, &["3d", "ui", "pathtrace"]);
+            caps.x11 = true;
+            caps.wayland = true;
+            caps
+        };
+        assert_eq!(estimate(&CATALOG, &caps), 3073);
+        // 打开 Win32 原生窗口：−163.5 KiB；再换 DirectWrite：−60 KiB。
+        let win32 = ProjectCapabilities {
+            win32_native: true,
+            ..caps.clone()
+        };
+        assert_eq!(estimate(&CATALOG, &win32), 3073 - 164);
+        let directwrite = ProjectCapabilities {
+            ui_directwrite: true,
+            ..win32
+        };
+        assert_eq!(estimate(&CATALOG, &directwrite), 3073 - 164 - 60);
+        // Linux 后端在 Windows 估算里不参与（基准里它们本来就是开的）。
+        let no_linux = ProjectCapabilities {
+            x11: false,
+            wayland: false,
+            ..caps
+        };
+        assert_eq!(estimate(&CATALOG, &no_linux), 3073);
+    }
+
+    #[test]
+    fn size_tiers_cover_standard_and_tiny() {
+        let ids: Vec<&str> = CATALOG.size_tiers.iter().map(|tier| tier.id).collect();
+        assert_eq!(ids, ["standard", "tiny"]);
+        for tier in CATALOG.size_tiers {
+            assert!(!tier.label.is_empty(), "{} 缺少标题", tier.id);
+            assert!(!tier.summary.is_empty(), "{} 缺少说明", tier.id);
+            assert!(!tier.command.is_empty(), "{} 缺少构建命令", tier.id);
+            assert!(!tier.pros.is_empty(), "{} 缺少「利」", tier.id);
+            assert!(!tier.cons.is_empty(), "{} 缺少「弊」", tier.id);
+            assert!(!tier.reference.is_empty(), "{} 缺少实测出处", tier.id);
+            // id 必须能被 SizeTier 的 serde 名识别。
+            assert!(
+                matches!(tier.id, "standard" | "tiny"),
+                "未知档位 {}",
+                tier.id
+            );
+        }
+        let standard = &CATALOG.size_tiers[0];
+        assert!(standard.default_on);
+        assert_eq!(standard.size_percent, 100);
+        assert_eq!(SizeTier::default().as_str(), standard.id);
+
+        let tiny = &CATALOG.size_tiers[1];
+        assert!(!tiny.default_on);
+        assert_eq!(tiny.size_percent, 60, "3D 全量 4.47 MB → 2.70 MB ≈ −40%");
+        // 代价必须写清楚：慢 10–30%，且不是竞赛级 64k。
+        assert!(
+            tiny.cons.iter().any(|con| con.contains("10–30%")),
+            "{tiny:?}"
+        );
+        assert!(tiny.cons.iter().any(|con| con.contains("64k")), "{tiny:?}");
+        assert!(
+            tiny.cons.iter().any(|con| con.contains("2.5–3.2 MB")),
+            "{tiny:?}"
+        );
+    }
+
     /// 引擎侧实测表：`(id, size_delta_kb, baseline_on)`。改数字必须改这张表。
     #[test]
     fn size_deltas_match_the_measured_table() {
@@ -494,8 +829,8 @@ mod tests {
             ("pathtrace", Some(-132), true),
             ("wayland", Some(-1100), true),
             ("x11", Some(-90), true),
-            ("win32-native", None, false),
-            ("ui-directwrite", None, false),
+            ("win32-native", Some(-164), false),
+            ("ui-directwrite", Some(-60), false),
         ];
         assert_eq!(
             CATALOG.entries.len(),
