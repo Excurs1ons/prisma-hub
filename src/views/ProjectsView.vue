@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   editorSourceLabel,
@@ -7,12 +7,13 @@ import {
   hub,
   prettyPath,
   relativeTime,
+  type CapabilityCatalog,
   type CreatedProject,
   type HubEnvironment,
   type ProjectCapabilities,
-  type ProjectDimension,
   type ProjectEntry,
 } from "../api";
+import CapabilityCard from "../components/CapabilityCard.vue";
 import type { Notice } from "../types";
 
 const props = defineProps<{
@@ -36,27 +37,76 @@ const creating = ref(false);
 const newError = ref("");
 /** 创建成功后的结果：路径 + 后端实际写进 Cargo.toml 的 feature。 */
 const created = ref<CreatedProject | null>(null);
-const newDimension = ref<ProjectDimension>("3d");
-const newUi = ref(false);
-const newAudio = ref(false);
-const newPhysics = ref(false);
-const newPathtrace = ref(false);
-const newX11 = ref(true);
-const newWayland = ref(true);
+/** 能力目录（说明 / 利弊 / 成本）的唯一来源是后端，前端不硬编码任何一项。 */
+const catalog = ref<CapabilityCatalog | null>(null);
+const catalogError = ref("");
+/** 向导的勾选状态：key 是目录项的 `id`，默认值来自目录的 `defaultOn`。 */
+const newOptions = ref<Record<string, boolean>>({});
+/** 展开了「利 / 弊」两列的目录项。 */
+const expandedOptions = ref<Record<string, boolean>>({});
 
 /**
  * 勾选的能力。推导成 feature 的规则只在 Rust 侧
- * （`projects::ProjectCapabilities::features`），这里只负责收集。
+ * （`projects::ProjectCapabilities::features`），这里只负责把目录 id 映射成
+ * 前端 JSON 形状。
  */
 const newCapabilities = computed<ProjectCapabilities>(() => ({
-  dimension: newDimension.value,
-  ui: newUi.value,
-  audio: newAudio.value,
-  physics: newPhysics.value,
-  pathtrace: newPathtrace.value,
-  x11: newX11.value,
-  wayland: newWayland.value,
+  dimension: newOptions.value["2d"] ? "2d" : "3d",
+  ui: Boolean(newOptions.value.ui),
+  audio: Boolean(newOptions.value.audio),
+  physics: Boolean(newOptions.value.physics),
+  pathtrace: Boolean(newOptions.value.pathtrace),
+  x11: Boolean(newOptions.value.x11),
+  wayland: Boolean(newOptions.value.wayland),
 }));
+
+const dimensionOptions = computed(
+  () => catalog.value?.entries.filter((entry) => entry.kind === "dimension") ?? [],
+);
+const capabilityOptions = computed(
+  () => catalog.value?.entries.filter((entry) => entry.kind === "feature") ?? [],
+);
+
+type Estimate = {
+  kb: number;
+  baselineKb: number;
+  baselineLabel: string;
+  baselineNote: string;
+  deltas: { label: string; kb: number }[];
+};
+
+/**
+ * 预计体积 = 基准值 + 已经偏离基准的项的增量。
+ *
+ * 数字全部来自目录（`baselineKb` / `baselineOn` / `sizeDeltaKb`），与 Rust 侧
+ * `capabilities.rs` 的测试是同一套算法。单项实测值相加不是严格线性的，所以界面上
+ * 一律写「估算」，并显示基准值与它的来源。
+ */
+const estimate = computed<Estimate | null>(() => {
+  const data = catalog.value;
+  if (!data) return null;
+  let kb = data.baselineKb;
+  const deltas: Estimate["deltas"] = [];
+  for (const entry of data.entries) {
+    if (!entry.enabled || entry.sizeDeltaKb === null) continue;
+    const on = Boolean(newOptions.value[entry.id]);
+    if (on === entry.baselineOn) continue;
+    kb += entry.sizeDeltaKb;
+    if (entry.sizeDeltaKb !== 0) {
+      deltas.push({
+        label: `${on ? "开启" : "关闭"} ${entry.label}`,
+        kb: entry.sizeDeltaKb,
+      });
+    }
+  }
+  return {
+    kb,
+    baselineKb: data.baselineKb,
+    baselineLabel: data.baselineLabel,
+    baselineNote: data.baselineNote,
+    deltas,
+  };
+});
 
 const selected = computed(
   () => props.projects.find((project) => project.path === selectedPath.value) ?? null,
@@ -80,7 +130,9 @@ const newProjectPath = computed(() => {
   return `${location}/${name}`;
 });
 const canCreate = computed(
-  () => Boolean(newName.value.trim() && newLocation.value.trim()) && !creating.value,
+  () =>
+    Boolean(newName.value.trim() && newLocation.value.trim() && catalog.value) &&
+    !creating.value,
 );
 
 /** 工程版本没有对应安装时，提示会用默认编辑器升级标记。 */
@@ -105,6 +157,61 @@ const chosenEditor = computed(
 const effectiveVersion = computed(
   () => chosenEditor.value?.version ?? props.env.editors.find((i) => i.isDefault)?.version,
 );
+
+/** 目录项的默认勾选状态；未接线的项永远是关的。 */
+function catalogDefaults(): Record<string, boolean> {
+  const next: Record<string, boolean> = {};
+  for (const entry of catalog.value?.entries ?? []) {
+    next[entry.id] = entry.enabled && entry.defaultOn;
+  }
+  return next;
+}
+
+async function loadCatalog() {
+  try {
+    catalog.value = await hub.capabilities();
+    catalogError.value = "";
+    if (!Object.keys(newOptions.value).length) {
+      newOptions.value = catalogDefaults();
+    }
+  } catch (error) {
+    catalogError.value = errorText(error);
+  }
+}
+
+onMounted(() => {
+  if (!catalog.value) void loadCatalog();
+});
+
+function setOption(id: string, on: boolean) {
+  newOptions.value = { ...newOptions.value, [id]: on };
+}
+
+/** 2D / 3D 是单选组：点一个就把同组其它项关掉。 */
+function chooseDimension(id: string) {
+  const next = { ...newOptions.value };
+  for (const entry of dimensionOptions.value) {
+    next[entry.id] = entry.id === id;
+  }
+  newOptions.value = next;
+}
+
+function toggleDetails(id: string) {
+  expandedOptions.value = {
+    ...expandedOptions.value,
+    [id]: !expandedOptions.value[id],
+  };
+}
+
+function formatMb(kb: number): string {
+  return `${(kb / 1000).toFixed(2)} MB`;
+}
+
+function formatDelta(kb: number): string {
+  const sign = kb < 0 ? "−" : "+";
+  const abs = Math.abs(kb);
+  return abs >= 1000 ? `${sign}${(abs / 1000).toFixed(2)} MB` : `${sign}${abs} KB`;
+}
 
 watch(
   () => props.projects,
@@ -194,14 +301,10 @@ function openNewProject() {
   newLocation.value = props.env.engine.root
     ? `${props.env.engine.root}/projects`
     : "";
-  newDimension.value = "3d";
-  newUi.value = false;
-  newAudio.value = false;
-  newPhysics.value = false;
-  newPathtrace.value = false;
-  newX11.value = true;
-  newWayland.value = true;
+  newOptions.value = catalogDefaults();
+  expandedOptions.value = {};
   newError.value = "";
+  if (!catalog.value) void loadCatalog();
   created.value = null;
   showNew.value = true;
 }
@@ -498,7 +601,7 @@ async function revealCreated() {
   </section>
 
   <div v-if="showNew" class="modal-backdrop" @click.self="closeNewProject">
-    <div class="modal">
+    <div class="modal wide">
       <header class="modal-head">
         <div>
           <h2>{{ created ? "工程已创建" : "新建工程" }}</h2>
@@ -506,7 +609,7 @@ async function revealCreated() {
             {{
               created
                 ? "下面是实际生成的目录与 feature 组合。"
-                : "勾选能力后生成资源骨架与最小游戏 crate（feature 由勾选项推导）。"
+                : "勾选能力后生成资源骨架与最小游戏 crate；每项都标了利弊与实测体积，feature 由后端推导。"
             }}
           </p>
         </div>
@@ -566,69 +669,67 @@ async function revealCreated() {
 
         <p v-if="newProjectPath" class="path-preview mono">{{ newProjectPath }}</p>
 
+        <p v-if="catalogError" class="callout danger">
+          读取能力目录失败：{{ catalogError }}
+          <button class="link-btn" @click="loadCatalog">重试</button>
+        </p>
+
         <div class="field">
-          <span>维度</span>
-          <div class="segmented">
-            <button
-              class="segment"
-              :class="{ active: newDimension === '3d' }"
-              @click="newDimension = '3d'"
+          <span>维度（互斥）</span>
+          <div v-if="dimensionOptions.length" class="option-grid">
+            <CapabilityCard
+              v-for="entry in dimensionOptions"
+              :key="entry.id"
+              :entry="entry"
+              :checked="Boolean(newOptions[entry.id])"
+              :expanded="Boolean(expandedOptions[entry.id])"
+              radio
+              @change="chooseDimension(entry.id)"
+              @expand="toggleDetails(entry.id)"
+            />
+          </div>
+          <p v-else-if="!catalogError" class="option-loading">正在读取能力目录…</p>
+        </div>
+
+        <div class="field">
+          <span>能力（可多选）</span>
+          <div v-if="capabilityOptions.length" class="option-list">
+            <CapabilityCard
+              v-for="entry in capabilityOptions"
+              :key="entry.id"
+              :entry="entry"
+              :checked="Boolean(newOptions[entry.id])"
+              :expanded="Boolean(expandedOptions[entry.id])"
+              @change="setOption(entry.id, $event)"
+              @expand="toggleDetails(entry.id)"
+            />
+          </div>
+          <p v-else-if="!catalogError" class="option-loading">正在读取能力目录…</p>
+        </div>
+
+        <div v-if="estimate" class="estimate">
+          <div class="estimate-head">
+            <span class="section-label">预计体积</span>
+            <strong class="mono">≈ {{ formatMb(estimate.kb) }}</strong>
+            <span class="badge">估算</span>
+          </div>
+          <p class="estimate-source">
+            基准 {{ formatMb(estimate.baselineKb) }}：{{ estimate.baselineLabel }} ·
+            {{ estimate.baselineNote }}
+          </p>
+          <p v-if="estimate.deltas.length" class="estimate-deltas">
+            <span
+              v-for="delta in estimate.deltas"
+              :key="delta.label"
+              class="estimate-delta"
             >
-              3D
-              <em>group-3d</em>
-            </button>
-            <button
-              class="segment"
-              :class="{ active: newDimension === '2d' }"
-              @click="newDimension = '2d'"
-            >
-              2D
-              <em>group-2d</em>
-            </button>
-          </div>
+              {{ delta.label }} {{ formatDelta(delta.kb) }}
+            </span>
+          </p>
+          <p v-else class="estimate-deltas">当前就是基准组合</p>
         </div>
 
-        <div class="field">
-          <span>能力</span>
-          <div class="cap-grid">
-            <label class="cap">
-              <input v-model="newUi" type="checkbox" />
-              <span>UI 叠加</span>
-              <em>ui</em>
-            </label>
-            <label class="cap">
-              <input v-model="newAudio" type="checkbox" />
-              <span>音频</span>
-              <em>audio</em>
-            </label>
-            <label class="cap">
-              <input v-model="newPhysics" type="checkbox" />
-              <span>物理</span>
-              <em>physics</em>
-            </label>
-            <label class="cap">
-              <input v-model="newPathtrace" type="checkbox" />
-              <span>路径追踪</span>
-              <em>pathtrace</em>
-            </label>
-          </div>
-        </div>
-
-        <div class="field">
-          <span>Linux 窗口后端</span>
-          <div class="cap-grid">
-            <label class="cap">
-              <input v-model="newX11" type="checkbox" />
-              <span>x11</span>
-            </label>
-            <label class="cap">
-              <input v-model="newWayland" type="checkbox" />
-              <span>wayland</span>
-            </label>
-          </div>
-        </div>
-
-        <p v-if="!newX11 && !newWayland" class="callout warn">
+        <p v-if="catalog && !newOptions.x11 && !newOptions.wayland" class="callout warn">
           Linux 上至少要选一个窗口后端（x11 或 wayland），否则生成的程序无法开窗口。
           其它平台不需要这两个 feature。
         </p>

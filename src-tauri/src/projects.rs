@@ -21,6 +21,9 @@
 //! 新建工程时勾选的维度 / UI / 音频 / 物理 / 路径追踪 / 窗口后端会推导成 `prism-app`
 //! 的 feature 列表（[`ProjectCapabilities::features`]），并决定模板场景里有哪些实体。
 //! 生成规则只有这一处实现，Hub 的界面只展示 [`GeneratedSkeleton`] 回报的实际列表。
+//!
+//! 界面上的说明、利弊与体积成本不在这里：见 `capabilities.rs` 的目录（它靠
+//! [`ProjectCapabilities::option_state`] / [`apply_option`] 的 `id` 与这里对应）。
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -359,6 +362,60 @@ impl ProjectCapabilities {
             features.push("wayland".to_string());
         }
         features
+    }
+
+    /// 能力目录的 `id` → 当前状态；`None` = 这个 id 还没接线（目录里 `enabled: false`）。
+    ///
+    /// 目录（`capabilities.rs`）只提供说明与体积数据，识别哪些 id 仍然是这里的职责：
+    /// 目录里每一项要么命中下面的分支，要么就明确标成未接线。
+    ///
+    /// 目前只有 `capabilities.rs` 的契约测试在调用（真正的开关在界面侧，由
+    /// `newCapabilities` 映射成下面的字段），所以非测试构建里显式放行 dead_code。
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn option_state(&self, id: &str) -> Option<bool> {
+        match id {
+            "3d" => Some(self.dimension == Dimension::ThreeD),
+            "2d" => Some(self.dimension == Dimension::TwoD),
+            "ui" => Some(self.ui),
+            "audio" => Some(self.audio),
+            "physics" => Some(self.physics),
+            "pathtrace" => Some(self.pathtrace),
+            "x11" => Some(self.x11),
+            "wayland" => Some(self.wayland),
+            _ => None,
+        }
+    }
+
+    /// 按能力目录的 `id` 改状态；返回 `false` 表示这个 id 还没接线（状态不变）。
+    ///
+    /// 2D / 3D 是单选组：`apply_option("2d", false)` 等价于切回 3D。与
+    /// [`Self::option_state`] 一样，目前由目录契约测试驱动。
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn apply_option(&mut self, id: &str, on: bool) -> bool {
+        match id {
+            "3d" => {
+                self.dimension = if on {
+                    Dimension::ThreeD
+                } else {
+                    Dimension::TwoD
+                }
+            }
+            "2d" => {
+                self.dimension = if on {
+                    Dimension::TwoD
+                } else {
+                    Dimension::ThreeD
+                }
+            }
+            "ui" => self.ui = on,
+            "audio" => self.audio = on,
+            "physics" => self.physics = on,
+            "pathtrace" => self.pathtrace = on,
+            "x11" => self.x11 = on,
+            "wayland" => self.wayland = on,
+            _ => return false,
+        }
+        true
     }
 
     /// Linux 上没有任何 winit 后端时生成的程序开不了窗口；其它平台没有这个限制。

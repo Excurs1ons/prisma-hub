@@ -11,6 +11,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 
+use crate::capabilities;
 use crate::editors::{self, EditorInstall};
 use crate::engine::{self, EngineInfo};
 use crate::projects::{self, ProjectEntry};
@@ -514,6 +515,13 @@ fn push_seed(projects: &mut Vec<StoredProject>, path: PathBuf) {
 #[tauri::command]
 pub fn hub_environment(state: State<'_, HubState>) -> HubEnvironment {
     state.environment()
+}
+
+/// 新建工程的能力目录（说明 / 利弊 / 体积成本）。纯静态数据，不依赖 Hub 状态；
+/// 前端不再硬编码任何一项。
+#[tauri::command]
+pub fn hub_capabilities() -> capabilities::CapabilityCatalog {
+    capabilities::CATALOG
 }
 
 #[tauri::command]

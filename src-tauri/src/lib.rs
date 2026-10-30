@@ -6,8 +6,10 @@
 //! - [`engine`]：定位 PrismaRev 源码根（`PRISMREV_ROOT` → 设置 → 自动探测）；
 //! - [`editors`]：编辑器安装发现、`--version` 探测、默认编辑器选择；
 //! - [`projects`]：工程结构探测、`ProjectVersion.txt`、新建骨架（按能力推导 feature）；
+//! - [`capabilities`]：新建工程的能力目录（说明 / 利弊 / 体积成本，单一数据源）；
 //! - [`hub`]：进程内状态与 Tauri 命令。
 
+mod capabilities;
 mod editors;
 mod engine;
 mod hub;
@@ -16,9 +18,9 @@ mod store;
 mod util;
 
 use hub::{
-    hub_add_editor, hub_add_project, hub_clear_engine_root, hub_create_project, hub_editors,
-    hub_environment, hub_open_project, hub_projects, hub_remove_editor, hub_remove_project,
-    hub_reveal_project, hub_set_default_editor, hub_set_engine_root, HubState,
+    hub_add_editor, hub_add_project, hub_capabilities, hub_clear_engine_root, hub_create_project,
+    hub_editors, hub_environment, hub_open_project, hub_projects, hub_remove_editor,
+    hub_remove_project, hub_reveal_project, hub_set_default_editor, hub_set_engine_root, HubState,
 };
 use tauri::Manager;
 
@@ -33,6 +35,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             hub_environment,
+            hub_capabilities,
             hub_set_engine_root,
             hub_clear_engine_root,
             hub_editors,
