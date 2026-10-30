@@ -15,8 +15,14 @@
 //!
 //! 不要求工程「完整」才算存在——`assets/scenes` 决定能不能打开，其余目录只用于在
 //! 详情页说明缺什么（例如没有游戏 crate 的纯资源工程是合法的）。
+//!
+//! ## 能力 → feature
+//!
+//! 新建工程时勾选的维度 / UI / 音频 / 物理 / 路径追踪 / 窗口后端会推导成 `prism-app`
+//! 的 feature 列表（[`ProjectCapabilities::features`]），并决定模板场景里有哪些实体。
+//! 生成规则只有这一处实现，Hub 的界面只展示 [`GeneratedSkeleton`] 回报的实际列表。
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use crate::util::write_file;
@@ -255,12 +261,133 @@ fn toml_escape(value: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// 能力 → feature / 场景
+// ---------------------------------------------------------------------------
+
+/// 工程维度：决定模板场景与组件组（`group-2d` / `group-3d`）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+pub enum Dimension {
+    #[serde(rename = "2d")]
+    TwoD,
+    #[default]
+    #[serde(rename = "3d")]
+    ThreeD,
+}
+
+impl Dimension {
+    fn label(self) -> &'static str {
+        match self {
+            Self::TwoD => "2D",
+            Self::ThreeD => "3D",
+        }
+    }
+
+    fn component_group(self) -> &'static str {
+        match self {
+            Self::TwoD => "group-2d",
+            Self::ThreeD => "group-3d",
+        }
+    }
+}
+
+/// 新建工程时勾选的能力。字段名就是前端（`api.ts`）的 JSON 形状。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectCapabilities {
+    #[serde(default)]
+    pub dimension: Dimension,
+    #[serde(default)]
+    pub ui: bool,
+    #[serde(default)]
+    pub audio: bool,
+    #[serde(default)]
+    pub physics: bool,
+    #[serde(default)]
+    pub pathtrace: bool,
+    /// Linux 窗口后端（`prism-platform` 的 winit 后端；其它平台忽略）。
+    #[serde(default = "default_window_backend")]
+    pub x11: bool,
+    #[serde(default = "default_window_backend")]
+    pub wayland: bool,
+}
+
+fn default_window_backend() -> bool {
+    true
+}
+
+impl Default for ProjectCapabilities {
+    fn default() -> Self {
+        Self {
+            dimension: Dimension::default(),
+            ui: false,
+            audio: false,
+            physics: false,
+            pathtrace: false,
+            x11: true,
+            wayland: true,
+        }
+    }
+}
+
+impl ProjectCapabilities {
+    /// 推导 `prism-app` 的 feature 列表（顺序固定，便于比较与展示）。
+    ///
+    /// - 维度 → `group-2d` / `group-3d`；
+    /// - `ui` 才带 `group-ui`：`ui` 是渲染叠加 + 引擎 UI 系统，`group-ui` 是
+    ///   `Node` / `Style` / `Text` 的组件组。不勾 UI 时两者都不加——模板场景里没有
+    ///   UI 节点，没必要把 UI 组件的 serde / 反射代码链进二进制；
+    /// - 窗口后端只在勾选时追加。
+    pub fn features(&self) -> Vec<String> {
+        let mut features = vec![self.dimension.component_group().to_string()];
+        if self.ui {
+            features.push("ui".to_string());
+            features.push("group-ui".to_string());
+        }
+        if self.audio {
+            features.push("audio".to_string());
+        }
+        if self.physics {
+            features.push("physics".to_string());
+        }
+        if self.pathtrace {
+            features.push("pathtrace".to_string());
+        }
+        if self.x11 {
+            features.push("x11".to_string());
+        }
+        if self.wayland {
+            features.push("wayland".to_string());
+        }
+        features
+    }
+
+    /// Linux 上没有任何 winit 后端时生成的程序开不了窗口；其它平台没有这个限制。
+    pub fn validate(&self) -> Result<(), String> {
+        if cfg!(target_os = "linux") && !self.x11 && !self.wayland {
+            return Err(
+                "Linux 窗口后端至少要选 x11 或 wayland，否则生成的程序无法开窗口".to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
+/// 生成结果：`hub` 据此回报实际写进 `Cargo.toml` 的 feature 与生成了什么。
+#[derive(Debug, Clone)]
+pub struct GeneratedSkeleton {
+    /// `prism-app` 的 feature 列表；没生成游戏 crate 时为空。
+    pub features: Vec<String>,
+    /// 是否生成了游戏 crate（找到引擎源码才有）。
+    pub game_crate: bool,
+}
+
+// ---------------------------------------------------------------------------
 // 新建工程骨架
 // ---------------------------------------------------------------------------
 
 /// 生成工程骨架。
 ///
-/// - 资源骨架（场景 / 清单 / 设置 / `.gitignore`）总是生成；
+/// - 资源骨架（场景 / 清单 / 设置 / `.gitignore`）按 `capabilities` 生成；
 /// - `editor_version` 有值时写 `ProjectSettings/ProjectVersion.txt`；
 /// - `engine_root` 有值时才生成游戏 crate（依赖用绝对路径，工程可以放在任意位置）。
 pub fn write_project_skeleton(
@@ -268,15 +395,18 @@ pub fn write_project_skeleton(
     name: &str,
     engine_root: Option<&Path>,
     editor_version: Option<&str>,
-) -> Result<(), String> {
+    capabilities: &ProjectCapabilities,
+) -> Result<GeneratedSkeleton, String> {
+    capabilities.validate()?;
+
     write_file(
         &target.join("assets/scenes/default.scene.json"),
-        DEFAULT_SCENE,
+        &scene_json(capabilities, name),
     )?;
     write_file(&target.join("assets/scenes.toml"), SCENES_TOML)?;
     write_file(
         &target.join("assets/settings.toml"),
-        &SETTINGS_TOML.replace("__NAME__", &toml_escape(name)),
+        &settings_toml(capabilities, name),
     )?;
     write_file(&target.join(".gitignore"), GITIGNORE)?;
 
@@ -288,14 +418,37 @@ pub fn write_project_skeleton(
         // 没有引擎源码（例如只装了打包好的 Hub）时仍然生成可被编辑器打开的
         // 资源工程；游戏 crate 留到有源码的机器上再建。
         write_file(&target.join("README.md"), NO_CRATE_README)?;
-        return Ok(());
+        return Ok(GeneratedSkeleton {
+            features: Vec::new(),
+            game_crate: false,
+        });
     };
 
-    let package = crate_name(name);
-    let ident = package.replace('-', "_");
-    let cargo = CARGO_TOML
-        .replace("__PACKAGE__", &package)
-        .replace("__CRATE__", &ident)
+    let features = capabilities.features();
+    write_file(
+        &target.join("Cargo.toml"),
+        &cargo_toml(name, engine_root, &features),
+    )?;
+    write_file(&target.join("src/lib.rs"), &lib_rs(name, capabilities))?;
+    write_file(&target.join("src/main.rs"), &main_rs(name))?;
+    write_file(
+        &target.join("README.md"),
+        &readme_md(name, capabilities, &features),
+    )?;
+    Ok(GeneratedSkeleton {
+        features,
+        game_crate: true,
+    })
+}
+
+fn cargo_toml(name: &str, engine_root: &Path, features: &[String]) -> String {
+    let quoted = features
+        .iter()
+        .map(|feature| format!("\"{feature}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    CARGO_TOML
+        .replace("__PACKAGE__", &crate_name(name))
         .replace(
             "__PRISM_APP__",
             &toml_path(&engine_root.join("crates/prism-app")),
@@ -307,87 +460,243 @@ pub fn write_project_skeleton(
         .replace(
             "__PRISM_SCENE__",
             &toml_path(&engine_root.join("crates/prism-scene")),
+        )
+        .replace("__FEATURES__", &quoted)
+}
+
+fn lib_rs(name: &str, capabilities: &ProjectCapabilities) -> String {
+    // 只请求真正编译进来的子系统：feature 没开时 `with_subsystem` 是空操作，
+    // 写进模板反而会让人以为音频 / 物理已经在跑。
+    let mut subsystems = String::from("\n        .with_subsystem(prism_app::Subsystem::Render)");
+    if capabilities.ui {
+        subsystems.push_str("\n        .with_subsystem(prism_app::Subsystem::UI)");
+    }
+    if capabilities.audio {
+        subsystems.push_str("\n        .with_subsystem(prism_app::Subsystem::Audio)");
+    }
+    if capabilities.physics {
+        subsystems.push_str("\n        .with_subsystem(prism_app::Subsystem::Physics)");
+    }
+    LIB_RS
+        .replace("__NAME__", name)
+        .replace("__SUBSYSTEMS__", &subsystems)
+}
+
+fn main_rs(name: &str) -> String {
+    MAIN_RS.replace("__CRATE__", &crate_name(name).replace('-', "_"))
+}
+
+fn settings_toml(capabilities: &ProjectCapabilities, name: &str) -> String {
+    let render_mode = if capabilities.pathtrace {
+        "path_trace"
+    } else {
+        "raster"
+    };
+    SETTINGS_TOML
+        .replace("__NAME__", &toml_escape(name))
+        .replace("__RENDER_MODE__", render_mode)
+}
+
+fn readme_md(name: &str, capabilities: &ProjectCapabilities, features: &[String]) -> String {
+    let mut chosen = vec![format!(
+        "- 维度：{}（组件组 `{}`）",
+        capabilities.dimension.label(),
+        capabilities.dimension.component_group()
+    )];
+    if capabilities.ui {
+        chosen.push(
+            "- UI 叠加：`ui` + `group-ui`（渲染叠加 + 引擎 UI 系统 + UI 组件组）".to_string(),
         );
-    write_file(&target.join("Cargo.toml"), &cargo)?;
-    write_file(
-        &target.join("src/lib.rs"),
-        &LIB_RS.replace("__NAME__", name),
-    )?;
-    write_file(
-        &target.join("src/main.rs"),
-        &MAIN_RS.replace("__CRATE__", &ident),
-    )?;
-    write_file(
-        &target.join("README.md"),
-        &README_MD.replace("__NAME__", name),
-    )?;
-    Ok(())
+    }
+    if capabilities.audio {
+        chosen.push("- 音频：`audio`（`AudioEngine` + 音频解码线程）".to_string());
+    }
+    if capabilities.physics {
+        chosen.push("- 物理：`physics`（Rapier 后台线程）".to_string());
+    }
+    if capabilities.pathtrace {
+        chosen.push(
+            "- 路径追踪：`pathtrace`（`assets/settings.toml` 里 `render_mode = \"path_trace\"`）"
+                .to_string(),
+        );
+    }
+    let mut backends = Vec::new();
+    if capabilities.x11 {
+        backends.push("x11");
+    }
+    if capabilities.wayland {
+        backends.push("wayland");
+    }
+    if !backends.is_empty() {
+        chosen.push(format!("- 窗口后端：{}", backends.join(" / ")));
+    }
+    README_MD
+        .replace("__NAME__", name)
+        .replace("__DIMENSION__", capabilities.dimension.label())
+        .replace("__CAPABILITIES__", &chosen.join("\n"))
+        .replace("__FEATURES__", &features.join(", "))
 }
 
 // ---------------------------------------------------------------------------
 // 模板
 // ---------------------------------------------------------------------------
 
-const DEFAULT_SCENE: &str = r#"{
-  "version": 1,
-  "entities": [
-    {
-      "name": "Skybox",
-      "parent": null,
-      "transform": {
-        "translation": [0, 0, 0],
-        "rotation": [0, 0, 0, 1],
-        "scale": [1, 1, 1]
-      },
-      "components": {
-        "prism_engine::scene::Skybox": {
-          "enabled": false,
-          "env_asset": 0,
-          "hdr_path": "",
-          "intensity": 1,
-          "rotation_degrees": 0
-        }
-      }
-    },
-    {
-      "name": "Camera",
-      "parent": null,
-      "transform": {
-        "translation": [0, 2.5, 18],
-        "rotation": [-0.06894800066947937, 0, 0, 0.9976199865341188],
-        "scale": [1, 1, 1]
-      },
-      "components": {
-        "prism_engine::scene::Camera": {
-          "aspect": 1.777,
-          "enabled": true,
-          "exposure": 1,
-          "far": 1000,
-          "fov_y_degrees": 60,
-          "near": 0.01
-        }
-      }
-    },
-    {
-      "name": "Sun",
-      "parent": null,
-      "transform": {
-        "translation": [0, 0, 0],
-        "rotation": [0, 0, 0, 1],
-        "scale": [1, 1, 1]
-      },
-      "components": {
-        "prism_engine::scene::DirectionalLight": {
-          "ambient": 1,
-          "color": [1, 1, 1],
-          "euler_xyz": [0, 0, 0],
-          "intensity": 100000
-        }
-      }
-    }
-  ]
+/// 模板场景。`version: 1` 是引擎自己 `assets/scenes/*.scene.json` 的现状：
+/// 缺 `id` 的文档由 loader 的 `migrate_scene_doc` 按数组顺序补齐。
+#[derive(serde::Serialize)]
+struct SceneDoc {
+    version: u32,
+    entities: Vec<serde_json::Value>,
 }
-"#;
+
+fn scene_json(capabilities: &ProjectCapabilities, name: &str) -> String {
+    let mut entities = Vec::new();
+    match capabilities.dimension {
+        Dimension::ThreeD => {
+            entities.push(skybox_entity());
+            entities.push(camera_entity(false));
+            entities.push(sun_entity());
+        }
+        Dimension::TwoD => {
+            entities.push(camera_entity(true));
+            entities.push(sprite_entity());
+        }
+    }
+    if capabilities.ui {
+        entities.push(hud_entity(name));
+    }
+    let doc = SceneDoc {
+        version: 1,
+        entities,
+    };
+    let mut text = serde_json::to_string_pretty(&doc).expect("模板场景必须是可序列化 JSON");
+    text.push('\n');
+    text
+}
+
+fn transform(translation: [f64; 3], rotation: [f64; 4]) -> serde_json::Value {
+    serde_json::json!({
+        "translation": translation,
+        "rotation": rotation,
+        "scale": [1.0, 1.0, 1.0],
+    })
+}
+
+fn skybox_entity() -> serde_json::Value {
+    serde_json::json!({
+        "name": "Skybox",
+        "parent": null,
+        "transform": transform([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+        "components": {
+            "prism_engine::scene::Skybox": {
+                "enabled": false,
+                "env_asset": 0,
+                "hdr_path": "",
+                "intensity": 1.0,
+                "rotation_degrees": 0.0,
+            }
+        }
+    })
+}
+
+/// 2D 用正交相机 + 纯色清屏；3D 沿用「看向原点」的透视相机。
+fn camera_entity(two_d: bool) -> serde_json::Value {
+    let (translation, rotation) = if two_d {
+        ([0.0, 0.0, 10.0], [0.0, 0.0, 0.0, 1.0])
+    } else {
+        (
+            [0.0, 2.5, 18.0],
+            [-0.068_948_000_669_479_37, 0.0, 0.0, 0.997_619_986_534_118_8],
+        )
+    };
+    let mut camera = serde_json::json!({
+        "aspect": 1.777,
+        "enabled": true,
+        "exposure": 1.0,
+        "far": 1000.0,
+        "fov_y_degrees": 60.0,
+        "near": 0.01,
+    });
+    if two_d {
+        camera["orthographic"] = serde_json::json!(true);
+        camera["orthographic_size"] = serde_json::json!(5.0);
+        camera["clear_flags"] = serde_json::json!("SolidColor");
+        camera["background_color"] = serde_json::json!([0.05, 0.07, 0.1, 1.0]);
+    }
+    serde_json::json!({
+        "name": "Camera",
+        "parent": null,
+        "transform": transform(translation, rotation),
+        "components": { "prism_engine::scene::Camera": camera }
+    })
+}
+
+fn sun_entity() -> serde_json::Value {
+    serde_json::json!({
+        "name": "Sun",
+        "parent": null,
+        "transform": transform([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+        "components": {
+            "prism_engine::scene::DirectionalLight": {
+                "ambient": 1.0,
+                "color": [1.0, 1.0, 1.0],
+                "euler_xyz": [0.0, 0.0, 0.0],
+                "intensity": 100000.0,
+            }
+        }
+    })
+}
+
+/// 2D 的占位精灵：`sprite_path` 为空 = 不绘制，填上贴图路径即可显示。
+fn sprite_entity() -> serde_json::Value {
+    serde_json::json!({
+        "name": "Sprite",
+        "parent": null,
+        "transform": transform([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+        "components": {
+            "prism_engine::scene::SpriteRenderer": {
+                "sprite_path": "",
+                "frame_size": [0, 0],
+                "frame_index": 0,
+                "pixels_per_unit": 100.0,
+                "pivot": [0.5, 0.5],
+                "color": [1.0, 1.0, 1.0, 1.0],
+                "flip_x": false,
+                "flip_y": false,
+                "sorting_layer": 0,
+                "order_in_layer": 0,
+            }
+        }
+    })
+}
+
+/// 勾了 UI 叠加时的示例元素：左上角的半透明标签，证明 UI 系统已经接上。
+fn hud_entity(name: &str) -> serde_json::Value {
+    serde_json::json!({
+        "name": "Hud",
+        "parent": null,
+        "transform": transform([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+        "components": {
+            "prism_engine::ui::Node": {},
+            "prism_engine::ui::Style": {
+                "width": 320.0,
+                "height": 44.0,
+                "anchors": {"min_x": 0.0, "min_y": 0.0, "max_x": 0.0, "max_y": 0.0},
+                "pivot": {"x": 0.0, "y": 0.0},
+                "margin": {"left": 24.0, "right": 0.0, "top": 24.0, "bottom": 0.0},
+                "background": [0.0, 0.0, 0.0, 0.45],
+                "border_radius": 8.0,
+                "visible": true,
+            },
+            "prism_engine::ui::Text": {
+                "content": name,
+                "font_size": 20.0,
+                "color": [1.0, 1.0, 1.0, 1.0],
+                "alignment": "Center",
+            }
+        }
+    })
+}
 
 const SCENES_TOML: &str = r#"# PrismaRev 场景清单。
 #
@@ -417,7 +726,8 @@ fullscreen = false
 vsync = true
 
 [render]
-render_mode = "raster"
+# path_trace 需要 prism-app 的 `pathtrace` feature；Hub 按勾选能力写好。
+render_mode = "__RENDER_MODE__"
 tonemap_mode = 0
 debug_flags = 0
 debug_rt = 0
@@ -451,19 +761,28 @@ description = "PrismaRev 用户工程"
 crate-type = ["lib", "cdylib"]
 
 [dependencies]
-prism-app = { path = "__PRISM_APP__" }
-prism-engine = { path = "__PRISM_ENGINE__" }
-prism-scene = { path = "__PRISM_SCENE__" }
-log = "0.4"
+# feature 由 Hub 新建工程时勾选的能力推导；改能力就改这里的列表。
+prism-app = { path = "__PRISM_APP__", default-features = false, features = [__FEATURES__] }
+# 这两个也必须 default-features = false：否则 prism-scene 的默认组件组会把
+# prism-app 的 group-* 开关重新打开。
+prism-engine = { path = "__PRISM_ENGINE__", default-features = false }
+prism-scene = { path = "__PRISM_SCENE__", default-features = false }
+
+# 玩家 / Android 打包：体积优先（fat LTO + 单 codegen unit + abort + strip）。
+# 编辑器 / 工具跑在引擎进程内，不能用这个 profile。
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
 "#;
 
 const LIB_RS: &str = r#"//! __NAME__ 的游戏入口。
 
-/// 构造应用：引擎负责窗口、渲染与音频；项目 system 可以在这里注册。
+/// 构造应用：引擎负责窗口与渲染；项目 system 可以在这里注册。
 pub fn build_app() -> prism_app::App {
-    prism_app::app()
-        .with_subsystem(prism_app::Subsystem::Render)
-        .with_subsystem(prism_app::Subsystem::Audio)
+    prism_app::app()__SUBSYSTEMS__
 }
 "#;
 
@@ -476,12 +795,40 @@ fn main() {
 
 const README_MD: &str = r#"# __NAME__
 
-PrismaRev 用户工程。
+PrismaRev 用户工程（__DIMENSION__）。
 
-- 用 PrismaRev Hub 打开本目录（或让编辑器以本目录为工作目录启动）。
-- 场景在 `assets/scenes/`，运行时清单是 `assets/scenes.toml`。
-- 编辑器版本记录在 `ProjectSettings/ProjectVersion.txt`，由 Hub 维护。
-- 构建场景包（在 PrismaRev 仓库根执行）：
+## 能力
+
+Hub 按新建时勾选的能力生成了这些 `prism-app` feature：
+
+```text
+__FEATURES__
+```
+
+对应关系：
+
+__CAPABILITIES__
+
+`group-*` 是**组件组**（决定哪些组件类型注册、serde 代码是否进二进制），
+`ui` / `audio` / `physics` / `pathtrace` 是**运行时能力**。没勾 UI 时不会带 `group-ui`，
+因此模板场景里也没有 UI 节点。改能力就改 `Cargo.toml` 里 `prism-app` 的 `features`，
+然后 `cargo check`。
+
+## 目录
+
+- `assets/scenes/`：作者场景（`.scene.json`），运行时清单是 `assets/scenes.toml`。
+- `assets/settings.toml`：窗口 / 渲染 / 构建设置。
+- `ProjectSettings/ProjectVersion.txt`：上次打开本工程的编辑器版本，由 Hub 维护。
+- `src/lib.rs`：`build_app()`；`src/main.rs`：桌面入口。
+
+## 运行
+
+```sh
+cargo run              # 开发构建
+cargo build --profile dist   # 体积优先的发布构建（strip 后的二进制在 target/dist/）
+```
+
+先构建场景包（在 PrismaRev 仓库根执行）：
 
 ```sh
 cargo run -p prism-build-pipeline -- build-scenes \
@@ -489,8 +836,6 @@ cargo run -p prism-build-pipeline -- build-scenes \
   --staging <本工程>/target/scene_pack \
   --output <本工程>/assets/scenes.pak
 ```
-
-- 桌面游戏入口：`cargo run`（先构建场景包）。
 "#;
 
 const NO_CRATE_README: &str = r#"# 新工程
@@ -584,14 +929,155 @@ mod tests {
         assert!(is_project_root(&root));
     }
 
+    fn caps_2d_ui() -> ProjectCapabilities {
+        ProjectCapabilities {
+            dimension: Dimension::TwoD,
+            ui: true,
+            ..ProjectCapabilities::default()
+        }
+    }
+
+    fn caps_3d_ui_audio() -> ProjectCapabilities {
+        ProjectCapabilities {
+            dimension: Dimension::ThreeD,
+            ui: true,
+            audio: true,
+            ..ProjectCapabilities::default()
+        }
+    }
+
+    fn caps_2d_minimal() -> ProjectCapabilities {
+        ProjectCapabilities {
+            dimension: Dimension::TwoD,
+            ..ProjectCapabilities::default()
+        }
+    }
+
+    fn scene_of(caps: &ProjectCapabilities) -> serde_json::Value {
+        serde_json::from_str(&scene_json(caps, "Demo")).expect("模板场景必须是合法 JSON")
+    }
+
+    fn entities_text(scene: &serde_json::Value) -> String {
+        scene["entities"].to_string()
+    }
+
     #[test]
-    fn default_scene_is_valid_json() {
-        let value: serde_json::Value =
-            serde_json::from_str(DEFAULT_SCENE).expect("模板场景必须是合法 JSON");
+    fn features_follow_the_capability_matrix() {
+        assert_eq!(
+            caps_2d_ui().features(),
+            ["group-2d", "ui", "group-ui", "x11", "wayland"]
+        );
+        assert_eq!(
+            caps_3d_ui_audio().features(),
+            ["group-3d", "ui", "group-ui", "audio", "x11", "wayland"]
+        );
+        // 「极简」不带 `ui` / `group-ui`：没勾 UI 就不该链接 UI 组件的 serde。
+        assert_eq!(caps_2d_minimal().features(), ["group-2d", "x11", "wayland"]);
+        let caps = ProjectCapabilities {
+            physics: true,
+            pathtrace: true,
+            wayland: false,
+            ..ProjectCapabilities::default()
+        };
+        assert_eq!(caps.features(), ["group-3d", "physics", "pathtrace", "x11"]);
+    }
+
+    #[test]
+    fn capabilities_deserialize_from_the_frontend_shape() {
+        let caps: ProjectCapabilities = serde_json::from_str(
+            r#"{"dimension":"2d","ui":true,"audio":false,"physics":false,"pathtrace":false,"x11":true,"wayland":false}"#,
+        )
+        .expect("前端 JSON 必须能反序列化");
+        assert_eq!(caps.dimension, Dimension::TwoD);
+        assert!(caps.ui);
+        assert!(!caps.wayland);
+
+        // 缺字段时默认 3D + 两个窗口后端。
+        let caps: ProjectCapabilities = serde_json::from_str("{}").expect("空对象也能反序列化");
+        assert_eq!(caps.dimension, Dimension::ThreeD);
+        assert!(caps.x11 && caps.wayland);
+        assert!(!caps.ui && !caps.audio && !caps.physics && !caps.pathtrace);
+    }
+
+    #[test]
+    fn linux_needs_at_least_one_window_backend() {
+        let none = ProjectCapabilities {
+            x11: false,
+            wayland: false,
+            ..ProjectCapabilities::default()
+        };
+        assert_eq!(none.validate().is_ok(), !cfg!(target_os = "linux"));
+        assert!(ProjectCapabilities {
+            x11: true,
+            wayland: false,
+            ..ProjectCapabilities::default()
+        }
+        .validate()
+        .is_ok());
+    }
+
+    #[test]
+    fn three_d_scene_has_sky_camera_and_sun() {
+        let value = scene_of(&ProjectCapabilities::default());
         assert_eq!(value["version"], 1);
-        assert!(value["entities"]
-            .as_array()
-            .is_some_and(|items| !items.is_empty()));
+        let text = entities_text(&value);
+        assert!(text.contains("prism_engine::scene::Skybox"), "{text}");
+        assert!(text.contains("prism_engine::scene::Camera"), "{text}");
+        assert!(
+            text.contains("prism_engine::scene::DirectionalLight"),
+            "{text}"
+        );
+        assert!(!text.contains("SpriteRenderer"), "{text}");
+        assert!(!text.contains("prism_engine::ui::Node"), "{text}");
+    }
+
+    #[test]
+    fn two_d_scene_is_orthographic_without_3d_components() {
+        let value = scene_of(&caps_2d_minimal());
+        let text = entities_text(&value);
+        assert!(
+            text.contains("prism_engine::scene::SpriteRenderer"),
+            "{text}"
+        );
+        assert!(!text.contains("Skybox"), "{text}");
+        assert!(!text.contains("DirectionalLight"), "{text}");
+        assert_eq!(
+            value["entities"][0]["components"]["prism_engine::scene::Camera"]["orthographic"],
+            true
+        );
+        assert_eq!(
+            value["entities"][0]["components"]["prism_engine::scene::Camera"]["clear_flags"],
+            "SolidColor"
+        );
+    }
+
+    #[test]
+    fn ui_capability_adds_a_hud_entity() {
+        let value = scene_of(&caps_2d_ui());
+        let text = entities_text(&value);
+        assert!(text.contains("prism_engine::ui::Node"), "{text}");
+        assert!(text.contains("prism_engine::ui::Style"), "{text}");
+        assert!(text.contains("prism_engine::ui::Text"), "{text}");
+        // 示例标签写工程名，方便一眼认出是哪个工程。
+        assert_eq!(
+            value["entities"][2]["components"]["prism_engine::ui::Text"]["content"],
+            "Demo"
+        );
+    }
+
+    #[test]
+    fn settings_render_mode_tracks_pathtrace() {
+        let raster = settings_toml(&caps_2d_minimal(), "Demo");
+        assert!(raster.contains("render_mode = \"raster\""), "{raster}");
+
+        let traced = settings_toml(
+            &ProjectCapabilities {
+                pathtrace: true,
+                ..ProjectCapabilities::default()
+            },
+            "Demo",
+        );
+        assert!(traced.contains("render_mode = \"path_trace\""), "{traced}");
     }
 
     #[test]
@@ -599,8 +1085,11 @@ mod tests {
         let root = scratch("skeleton-no-engine");
         let target = root.join("demo");
 
-        write_project_skeleton(&target, "Demo", None, Some("0.1.0")).expect("写资源骨架");
+        let generated = write_project_skeleton(&target, "Demo", None, Some("0.1.0"), &caps_2d_ui())
+            .expect("写资源骨架");
 
+        assert!(!generated.game_crate);
+        assert!(generated.features.is_empty());
         assert!(is_project_root(&target));
         assert!(!target.join("Cargo.toml").exists());
         assert!(target.join("README.md").is_file());
@@ -616,30 +1105,116 @@ mod tests {
         let engine = root.join("PrismaRev");
         let target = root.join("demo");
 
-        write_project_skeleton(&target, "Demo Game", Some(&engine), Some("1.0.0"))
-            .expect("写工程骨架");
+        let generated = write_project_skeleton(
+            &target,
+            "Demo Game",
+            Some(&engine),
+            Some("1.0.0"),
+            &caps_3d_ui_audio(),
+        )
+        .expect("写工程骨架");
+
+        assert!(generated.game_crate);
+        assert_eq!(
+            generated.features,
+            ["group-3d", "ui", "group-ui", "audio", "x11", "wayland"]
+        );
 
         let cargo = std::fs::read_to_string(target.join("Cargo.toml")).expect("Cargo.toml");
         assert!(cargo.contains("name = \"demo-game\""), "{cargo}");
         assert!(
-            cargo.contains(&toml_path(&engine.join("crates/prism-app"))),
+            cargo.contains(&format!(
+                "prism-app = {{ path = \"{}\", default-features = false, features = [",
+                toml_path(&engine.join("crates/prism-app"))
+            )),
             "{cargo}"
         );
+        assert!(
+            cargo.contains(
+                "features = [\"group-3d\", \"ui\", \"group-ui\", \"audio\", \"x11\", \"wayland\"]"
+            ),
+            "{cargo}"
+        );
+        // 这两个默认特性会把组件组开关重新打开。
+        assert!(
+            cargo.contains(&format!(
+                "prism-engine = {{ path = \"{}\", default-features = false }}",
+                toml_path(&engine.join("crates/prism-engine"))
+            )),
+            "{cargo}"
+        );
+        assert!(
+            cargo.contains(&format!(
+                "prism-scene = {{ path = \"{}\", default-features = false }}",
+                toml_path(&engine.join("crates/prism-scene"))
+            )),
+            "{cargo}"
+        );
+
+        let lib = std::fs::read_to_string(target.join("src/lib.rs")).expect("lib.rs");
+        assert!(lib.contains("Subsystem::Render"), "{lib}");
+        assert!(lib.contains("Subsystem::UI"), "{lib}");
+        assert!(lib.contains("Subsystem::Audio"), "{lib}");
+        assert!(!lib.contains("Subsystem::Physics"), "{lib}");
+
         let main = std::fs::read_to_string(target.join("src/main.rs")).expect("main.rs");
         assert!(main.contains("demo_game::build_app()"), "{main}");
+
         let settings =
             std::fs::read_to_string(target.join("assets/settings.toml")).expect("settings");
         assert!(settings.contains("name = \"Demo Game\""), "{settings}");
+
+        let readme = std::fs::read_to_string(target.join("README.md")).expect("README");
+        assert!(
+            readme.contains("group-3d, ui, group-ui, audio, x11, wayland"),
+            "{readme}"
+        );
+        assert!(readme.contains("3D"), "{readme}");
+
         assert_eq!(read_project_version(&target).as_deref(), Some("1.0.0"));
         assert!(structure_of(&target).game_crate);
+    }
+
+    #[test]
+    fn minimal_project_requests_only_render_subsystem() {
+        let root = scratch("skeleton-minimal");
+        let engine = root.join("PrismaRev");
+        let target = root.join("demo");
+
+        let generated =
+            write_project_skeleton(&target, "Demo", Some(&engine), None, &caps_2d_minimal())
+                .expect("写工程骨架");
+
+        assert_eq!(generated.features, ["group-2d", "x11", "wayland"]);
+        let lib = std::fs::read_to_string(target.join("src/lib.rs")).expect("lib.rs");
+        assert_eq!(lib.matches("with_subsystem").count(), 1, "{lib}");
+        assert!(lib.contains("Subsystem::Render"), "{lib}");
     }
 
     #[test]
     fn skeleton_without_editor_version_has_no_marker() {
         let root = scratch("skeleton-no-version");
         let target = root.join("demo");
-        write_project_skeleton(&target, "Demo", None, None).expect("写骨架");
+        write_project_skeleton(&target, "Demo", None, None, &caps_2d_minimal()).expect("写骨架");
         assert!(!target.join(VERSION_FILE).exists());
         assert!(!structure_of(&target).version_file);
+    }
+
+    #[test]
+    fn invalid_capabilities_write_nothing() {
+        let root = scratch("skeleton-invalid");
+        let target = root.join("demo");
+        let caps = ProjectCapabilities {
+            x11: false,
+            wayland: false,
+            ..ProjectCapabilities::default()
+        };
+        let result = write_project_skeleton(&target, "Demo", None, None, &caps);
+        if cfg!(target_os = "linux") {
+            assert!(result.is_err());
+            assert!(!target.exists());
+        } else {
+            assert!(result.is_ok());
+        }
     }
 }

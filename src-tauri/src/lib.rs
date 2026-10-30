@@ -5,7 +5,7 @@
 //! - [`store`]：`hub.json` 持久化（用户选择，不缓存磁盘状态）；
 //! - [`engine`]：定位 PrismaRev 源码根（`PRISMREV_ROOT` → 设置 → 自动探测）；
 //! - [`editors`]：编辑器安装发现、`--version` 探测、默认编辑器选择；
-//! - [`projects`]：工程结构探测、`ProjectVersion.txt`、新建骨架；
+//! - [`projects`]：工程结构探测、`ProjectVersion.txt`、新建骨架（按能力推导 feature）；
 //! - [`hub`]：进程内状态与 Tauri 命令。
 
 mod editors;
