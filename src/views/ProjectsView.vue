@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { open } from "@tauri-apps/plugin-dialog";
+import { Search, Folder, AlertTriangle, X } from "@lucide/vue";
 import {
   editorSourceLabel,
   errorText,
@@ -435,25 +436,27 @@ async function revealCreated() {
     props.notify("error", errorText(error));
   }
 }
+
+async function copyProjectPath(path: string) {
+  try {
+    await navigator.clipboard.writeText(path);
+    props.notify("ok", "工程路径已复制");
+  } catch (error) {
+    props.notify("error", errorText(error));
+  }
+}
 </script>
 
 <template>
   <section class="workspace">
     <header class="topbar">
       <div class="heading">
-        <h1>工程</h1>
-        <p>
-          {{ projects.length }} 个工程 · 双击列表项直接打开 · 版本来自
-          ProjectSettings/ProjectVersion.txt
-        </p>
+        <h1>工程 <span class="heading-count">{{ projects.length }}</span></h1>
       </div>
 
       <div class="actions">
         <label class="search">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <circle cx="11" cy="11" r="7" />
-            <path d="m16 16 4 4" />
-          </svg>
+          <Search :size="15" :stroke-width="1.7" aria-hidden="true" />
           <input v-model="filter" placeholder="搜索工程" spellcheck="false" />
         </label>
         <button class="btn" @click="addProject">添加</button>
@@ -463,6 +466,10 @@ async function revealCreated() {
 
     <div class="projects">
       <div class="list">
+        <div class="list-toolbar">
+          <span>最近工程</span>
+          <span class="mono">{{ filteredProjects.length }}/{{ projects.length }}</span>
+        </div>
         <div
           v-for="project in filteredProjects"
           :key="project.path"
@@ -474,11 +481,7 @@ async function revealCreated() {
           @keydown.enter="openProject(project)"
         >
           <div class="project-icon">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5v-10Z"
-              />
-            </svg>
+            <Folder :size="19" :stroke-width="1.6" aria-hidden="true" />
           </div>
           <div class="project-main">
             <div class="project-title">
@@ -494,27 +497,19 @@ async function revealCreated() {
           </div>
           <div class="project-side">
             <time>{{ relativeTime(project.lastOpened) }}</time>
-            <span>{{ project.sceneCount }} 个场景</span>
+            <span>{{ project.sceneCount }} 场景</span>
           </div>
         </div>
 
-        <div v-if="!projects.length" class="empty-list">
-          <div class="empty-art">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5v-10Z"
-              />
-            </svg>
-          </div>
+        <div v-if="!projects.length" class="empty-list project-empty">
           <strong>还没有工程</strong>
-          <p>新建一个工程，或把已有的 PrismaRev 工程目录添加到 Hub。</p>
           <div class="empty-actions">
             <button class="btn" @click="addProject">添加已有工程</button>
             <button class="btn primary" @click="openNewProject">新建工程</button>
           </div>
         </div>
 
-        <div v-else-if="!filteredProjects.length" class="empty-list compact">
+        <div v-else-if="!filteredProjects.length" class="empty-list compact project-empty">
           <strong>没有匹配「{{ filter }}」的工程</strong>
           <button class="link-btn" @click="filter = ''">清除搜索</button>
         </div>
@@ -523,22 +518,15 @@ async function revealCreated() {
       <aside class="detail">
         <template v-if="selected">
           <div class="detail-head">
-            <div class="project-icon large">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5v-10Z"
-                />
-              </svg>
-            </div>
             <div class="detail-title">
               <h2>{{ selected.name }}</h2>
-              <p class="mono">{{ prettyPath(selected.path) }}</p>
+              <button class="path-copy mono" :title="selected.path" @click="copyProjectPath(selected.path)">{{ prettyPath(selected.path) }}</button>
             </div>
           </div>
 
           <div class="detail-actions">
             <button
-              class="btn primary block"
+              class="btn primary"
               :disabled="busy === selected.path || !selected.valid || selected.running"
               @click="openProject(selected)"
             >
@@ -550,15 +538,15 @@ async function revealCreated() {
                     : "打开工程"
               }}
             </button>
-            <button class="btn block" @click="reveal(selected)">
-              在文件管理器中显示
+            <button class="btn" @click="reveal(selected)">
+              打开所在目录
             </button>
           </div>
 
           <label v-if="editorOptions.length" class="field">
-            <span>使用编辑器</span>
+            <span>编辑器</span>
             <select v-model="editorChoice">
-              <option value="">自动（版本匹配 → 默认）</option>
+              <option value="">自动选择</option>
               <option
                 v-for="install in editorOptions"
                 :key="install.path"
@@ -569,10 +557,7 @@ async function revealCreated() {
               </option>
             </select>
           </label>
-          <p v-else class="callout warn">
-            还没有可用编辑器。到「编辑器」页添加安装，或用
-            <code>PRISMREV_EDITOR_BIN</code> 指定路径。
-          </p>
+          <p v-else class="callout warn"><AlertTriangle :size="14" aria-hidden="true" />未配置可用编辑器</p>
 
           <div v-if="!selected.exists" class="callout danger">工程目录已丢失</div>
           <div v-else-if="!selected.valid" class="callout danger">
@@ -614,61 +599,59 @@ async function revealCreated() {
             </div>
           </dl>
 
-          <p class="section-label">工程结构</p>
+          <div class="section-heading"><p class="section-label">结构</p><span>{{ Object.values(selected.structure).filter(Boolean).length }}/{{ Object.values(selected.structure).length }}</span></div>
           <div class="checklist">
             <span class="check-item" :class="{ ok: selected.structure.assets }">
-              <i class="check-mark">{{ selected.structure.assets ? "✓" : "" }}</i>
+              <i class="check-mark"></i>
               assets/
+              <small v-if="!selected.structure.assets">缺失</small>
             </span>
             <span class="check-item" :class="{ ok: selected.structure.scenesDir }">
-              <i class="check-mark">{{ selected.structure.scenesDir ? "✓" : "" }}</i>
+              <i class="check-mark"></i>
               scenes/
+              <small v-if="!selected.structure.scenesDir">缺失</small>
             </span>
             <span
               class="check-item"
               :class="{ ok: selected.structure.scenesManifest }"
             >
-              <i class="check-mark">{{
-                selected.structure.scenesManifest ? "✓" : ""
-              }}</i>
+              <i class="check-mark"></i>
               scenes.toml
+              <small v-if="!selected.structure.scenesManifest">缺失</small>
             </span>
             <span class="check-item" :class="{ ok: selected.structure.settings }">
-              <i class="check-mark">{{ selected.structure.settings ? "✓" : "" }}</i>
+              <i class="check-mark"></i>
               settings.toml
+              <small v-if="!selected.structure.settings">缺失</small>
             </span>
             <span class="check-item" :class="{ ok: selected.structure.gameCrate }">
-              <i class="check-mark">{{ selected.structure.gameCrate ? "✓" : "" }}</i>
+              <i class="check-mark"></i>
               游戏 crate
+              <small v-if="!selected.structure.gameCrate">缺失</small>
             </span>
             <span
               class="check-item"
               :class="{ ok: selected.structure.projectSettings }"
             >
-              <i class="check-mark">{{
-                selected.structure.projectSettings ? "✓" : ""
-              }}</i>
+              <i class="check-mark"></i>
               ProjectSettings/
+              <small v-if="!selected.structure.projectSettings">缺失</small>
             </span>
             <span
               class="check-item"
               :class="{ ok: selected.structure.versionFile }"
             >
-              <i class="check-mark">{{
-                selected.structure.versionFile ? "✓" : ""
-              }}</i>
+              <i class="check-mark"></i>
               ProjectVersion.txt
+              <small v-if="!selected.structure.versionFile">缺失</small>
             </span>
           </div>
 
-          <button class="btn danger ghost block" @click="removeSelected">
-            从列表移除
-          </button>
+          <button class="btn danger ghost block" @click="removeSelected">移除工程</button>
         </template>
 
         <div v-else class="detail-empty">
-          <strong>未选择工程</strong>
-          <p>在左侧选择一个工程查看详情。</p>
+          <strong>选择工程</strong>
         </div>
       </aside>
     </div>
@@ -687,7 +670,7 @@ async function revealCreated() {
             }}
           </p>
         </div>
-        <button class="icon-btn" aria-label="关闭" @click="closeNewProject">×</button>
+        <button class="icon-btn" aria-label="关闭" @click="closeNewProject"><X :size="16" aria-hidden="true" /></button>
       </header>
 
       <template v-if="created">
@@ -847,7 +830,7 @@ async function revealCreated() {
             v-if="estimate.tier && estimate.tier.sizePercent !== 100"
             class="estimate-source"
           >
-            {{ estimate.tier.label }}：标准发布 {{ formatMb(estimate.standardKb) }} →
+            {{ estimate.tier.label }}：标准发布 {{ formatMb(estimate.standardKb) }} 到
             {{ formatMb(estimate.kb) }}（按实测 −{{
               100 - estimate.tier.sizePercent
             }}% 折算，仍是估算）。出处：{{ estimate.tier.reference }}

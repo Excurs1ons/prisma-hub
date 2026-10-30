@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { Folder, Monitor, Settings, Sun, Moon } from "@lucide/vue";
 import {
   errorText,
   hub,
@@ -19,6 +20,9 @@ const ready = ref(false);
 const bootError = ref("");
 const view = ref<View>("projects");
 const notice = ref<Notice | null>(null);
+const theme = ref<"light" | "dark">(
+  (window.localStorage.getItem("prisma-hub-theme") as "light" | "dark" | null) ?? "dark",
+);
 
 let noticeTimer: number | undefined;
 let pollTimer: number | undefined;
@@ -37,6 +41,15 @@ function notify(kind: Notice["kind"], text: string) {
     notice.value = null;
   }, 4600);
 }
+
+function toggleTheme() {
+  theme.value = theme.value === "dark" ? "light" : "dark";
+  window.localStorage.setItem("prisma-hub-theme", theme.value);
+}
+
+watch(theme, (next) => {
+  document.documentElement.dataset.theme = next;
+});
 
 async function refreshProjects(silent = false) {
   try {
@@ -67,6 +80,7 @@ function onEngineChanged(engine: EngineInfo) {
 }
 
 onMounted(async () => {
+  document.documentElement.dataset.theme = theme.value;
   try {
     await refreshEnvironment();
     await refreshProjects();
@@ -112,11 +126,7 @@ onUnmounted(() => {
           :class="{ active: view === 'projects' }"
           @click="view = 'projects'"
         >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path
-              d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5v-10Z"
-            />
-          </svg>
+          <Folder :size="17" :stroke-width="1.7" aria-hidden="true" />
           <span>工程</span>
           <em>{{ projects.length }}</em>
         </button>
@@ -125,10 +135,7 @@ onUnmounted(() => {
           :class="{ active: view === 'editors' }"
           @click="view = 'editors'"
         >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M4 5h16v11H4z" />
-            <path d="M9 20h6M12 16v4" />
-          </svg>
+          <Monitor :size="17" :stroke-width="1.7" aria-hidden="true" />
           <span>编辑器</span>
           <em>{{ availableEditors }}</em>
         </button>
@@ -137,15 +144,16 @@ onUnmounted(() => {
           :class="{ active: view === 'settings' }"
           @click="view = 'settings'"
         >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <circle cx="12" cy="12" r="3" />
-            <path
-              d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09A1.7 1.7 0 0 0 15 4.6a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.14.6.66 1 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1Z"
-            />
-          </svg>
+          <Settings :size="17" :stroke-width="1.7" aria-hidden="true" />
           <span>设置</span>
         </button>
       </nav>
+
+      <button class="theme-toggle" type="button" @click="toggleTheme">
+        <Sun v-if="theme === 'dark'" :size="17" :stroke-width="1.7" aria-hidden="true" />
+        <Moon v-else :size="17" :stroke-width="1.7" aria-hidden="true" />
+        <span>{{ theme === "dark" ? "亮色" : "暗色" }}</span>
+      </button>
 
       <button
         class="sidebar-foot"

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { open } from "@tauri-apps/plugin-dialog";
+import { Monitor } from "@lucide/vue";
 import {
   editorSourceLabel,
   engineSourceLabel,
@@ -51,7 +52,7 @@ async function addEditor() {
     const picked = await open({
       directory: false,
       multiple: false,
-      title: "选择编辑器可执行文件（prisma-editor / prisma-editor-app）",
+      title: "选择 PrismaRev 编辑器可执行文件（prisma-editor.exe）",
     });
     if (typeof picked !== "string") return;
     busy.value = picked;
@@ -110,17 +111,18 @@ async function reveal(install: EditorInstall) {
       <div class="heading">
         <h1>编辑器</h1>
         <p>
-          {{ available.length }} 个可用 · 打开工程时优先用版本匹配的安装，否则用默认
+          {{ available.length }} 可用 / {{ installs.length }} 已登记
+          <span class="heading-source">引擎：{{ env.engine.root ? prettyPath(env.engine.root) : "未找到" }} · {{ engineSourceLabel(env.engine.source) }}</span>
         </p>
       </div>
-      <div class="actions">
+      <div v-if="installs.length" class="actions">
         <button class="btn" @click="refresh">重新检测</button>
-        <button class="btn primary" @click="addEditor">添加编辑器</button>
+        <button class="btn primary" @click="addEditor">选择编辑器 .exe</button>
       </div>
     </header>
 
     <div class="scroll-area">
-      <div class="editor-list">
+      <div class="editor-list" :class="{ 'is-empty': !installs.length }">
         <div
           v-for="install in installs"
           :key="install.path"
@@ -167,37 +169,19 @@ async function reveal(install: EditorInstall) {
           <pre v-if="install.probeError" class="probe-error mono">{{ install.probeError }}</pre>
         </div>
 
-        <div v-if="!installs.length" class="empty-list">
+        <div v-if="!installs.length" class="empty-list editor-empty">
           <div class="empty-art">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M4 5h16v11H4z" />
-              <path d="M9 20h6M12 16v4" />
-            </svg>
+            <Monitor :size="26" :stroke-width="1.4" aria-hidden="true" />
           </div>
           <strong>没有找到编辑器</strong>
-          <p>
-            构建 <code>editor/</code> 后点「重新检测」，或手动添加
-            <code>prisma-editor</code> 可执行文件。
-          </p>
-          <div class="empty-actions">
-            <button class="btn" @click="refresh">重新检测</button>
-            <button class="btn primary" @click="addEditor">添加编辑器</button>
-          </div>
+          <p>选择已编译的 PrismaRev 编辑器可执行文件（.exe），不能选择源码目录。</p>
+          <button class="btn primary" @click="addEditor">选择编辑器 .exe</button>
         </div>
 
         <div v-else-if="missing.length" class="hint">
           有 {{ missing.length }} 个安装指向的文件已不存在。移除它们，或恢复对应文件。
         </div>
 
-        <div class="hint">
-          自动发现来源：与 Hub 同目录的二进制（打包布局）、引擎 checkout 的
-          <code>editor/src-tauri/target/{debug,release}</code>（开发布局）、以及
-          <code>PRISMREV_EDITOR_BIN</code>。当前引擎根：
-          <code>{{ env.engine.root ?? "未找到" }}</code>
-          （{{ engineSourceLabel(env.engine.source) }}）。
-          版本通过 <code>--version</code> 探测，失败时回退到 checkout 的
-          <code>tauri.conf.json</code>。
-        </div>
       </div>
     </div>
   </section>

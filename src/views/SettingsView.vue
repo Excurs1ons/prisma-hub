@@ -67,17 +67,14 @@ async function revealStore() {
     <header class="topbar">
       <div class="heading">
         <h1>设置</h1>
-        <p>Hub 如何找到 PrismaRev 源码与编辑器</p>
+        <p>源码路径与本地数据</p>
       </div>
     </header>
 
     <div class="scroll-area">
-      <div class="settings-card">
+      <div class="settings-card settings-engine">
         <h2>PrismaRev 源码根</h2>
-        <p>
-          新建工程时用这里的 <code>crates/</code> 写游戏 crate 依赖，编辑器页也从这里找
-          开发构建。<strong>不需要</strong>把 Hub 放进 PrismaRev 仓库。
-        </p>
+        <p>用于新建工程和发现开发版编辑器。</p>
 
         <dl class="meta">
           <div>
@@ -113,19 +110,11 @@ async function revealStore() {
 
         <pre v-if="env.engine.hint" class="hint mono">{{ env.engine.hint }}</pre>
 
-        <div class="hint">
-          探测顺序：<code>PRISMREV_ROOT</code>（显式覆盖）→ 本页保存的路径 →
-          Hub 所在目录的上级 → 同级目录里含 <code>crates/prism-app</code> 的
-          checkout（仅开发布局）。环境变量设置了却无效会直接报错，不会静默回退。
-        </div>
       </div>
 
-      <div class="settings-card" style="margin-top: 16px">
+      <div class="settings-card settings-card-secondary settings-data">
         <h2>Hub 数据</h2>
-        <p>
-          工程列表、手动添加的编辑器、默认编辑器与源码根保存在一个 JSON 文件里；
-          磁盘上的工程状态每次都重新探测，不缓存。
-        </p>
+        <p>工程列表、编辑器与源码路径。</p>
         <dl class="meta">
           <div>
             <dt>hub.json</dt>

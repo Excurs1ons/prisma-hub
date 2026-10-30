@@ -5,7 +5,7 @@
   "identifier": "com.prismarev.hub",
   "build": {
     "beforeDevCommand": "pnpm dev",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://127.0.0.1:5173",
     "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"
   },
@@ -13,10 +13,10 @@
     "windows": [
       {
         "title": "PrismaRev Hub",
-        "width": 1180,
-        "height": 760,
-        "minWidth": 960,
-        "minHeight": 620,
+        "width": 1100,
+        "height": 700,
+        "minWidth": 900,
+        "minHeight": 600,
         "center": true
       }
     ],
