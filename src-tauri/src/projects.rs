@@ -2,7 +2,7 @@
 //!
 //! ## 版本标记
 //!
-//! 和 Unity 一样用 `ProjectSettings/ProjectVersion.txt`：
+//! 工程用 `ProjectSettings/ProjectVersion.txt` 记录上次打开它的编辑器版本：
 //!
 //! ```text
 //! m_EditorVersion: 0.1.0
@@ -32,7 +32,7 @@ use crate::util::write_file;
 
 /// 版本标记相对工程根的位置。
 pub const VERSION_FILE: &str = "ProjectSettings/ProjectVersion.txt";
-/// 版本标记里唯一的键（Unity 兼容）。
+/// 版本标记里唯一的键。
 pub const VERSION_KEY: &str = "m_EditorVersion";
 
 #[derive(Debug, Clone, Serialize)]

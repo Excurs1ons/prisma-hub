@@ -348,7 +348,7 @@ impl HubState {
     /// 启动编辑器打开工程。
     ///
     /// 编辑器选择：`editor` 显式指定 > 版本标记完全匹配 > 默认编辑器。
-    /// 启动后把版本标记更新成实际使用的版本（Unity 的升级行为）。
+    /// 启动后把版本标记更新成实际使用的版本。
     pub fn open_project(&self, raw: &str, editor: Option<&str>) -> Result<ProjectEntry, String> {
         let path = canonical_project_dir(raw)?;
         let key = canonical_string(&path);
@@ -666,9 +666,10 @@ mod tests {
 
         let seeds = seed_projects(Some(&root));
         assert_eq!(seeds.len(), 2);
+        // 用 Path 比较组件：工程路径是字符串，Windows 上分隔符是 `\`。
         assert!(seeds
             .iter()
-            .any(|seed| seed.path.ends_with("projects/demo")));
+            .any(|seed| Path::new(&seed.path).ends_with("projects/demo")));
     }
 
     #[test]
@@ -717,6 +718,7 @@ mod tests {
     }
 
     /// 预先写一个空的 v2 配置，避免首次运行从当前机器上的引擎 checkout 播种工程。
+    #[cfg(unix)]
     fn empty_store(dir: &Path) {
         std::fs::create_dir_all(dir).expect("创建数据目录");
         std::fs::write(dir.join(crate::store::STORE_FILE), r#"{"version":2}"#)

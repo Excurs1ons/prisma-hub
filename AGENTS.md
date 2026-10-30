@@ -1,7 +1,11 @@
 # PrismaRev Hub — Agent Instructions
 
-Unity Hub 形态的桌面工程管理器（Tauri 2 + Vue 3 + Rust）。**独立仓库 / 独立 Cargo
-workspace**，不是 PrismaRev 根 workspace 的成员，也不依赖它的目录结构。
+PrismaRev 的桌面工程管理器（Tauri 2 + Vue 3 + Rust）：管理工程、编辑器安装，并按
+每个工程记录的版本打开编辑器。**独立仓库 / 独立 Cargo workspace**，不是 PrismaRev
+根 workspace 的成员，也不依赖它的目录结构。
+
+界面、交互与措辞按独立设计（cleanroom）维护：只描述 PrismaRev 自己的约定，不引用
+其它引擎或启动器的产品名、界面结构或行为作类比。
 
 ## 布局
 

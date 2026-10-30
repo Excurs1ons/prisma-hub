@@ -1,4 +1,4 @@
-//! PrismaRev Hub —— Unity Hub 形态的桌面工程管理器。
+//! PrismaRev Hub —— PrismaRev 的桌面工程管理器。
 //!
 //! 模块划分：
 //!

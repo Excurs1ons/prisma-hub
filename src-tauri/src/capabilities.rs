@@ -697,12 +697,15 @@ mod tests {
 
     #[test]
     fn windows_only_options_are_rejected_on_linux() {
+        // 显式指定 Linux 目标：`default()` 取 Host 平台，测试不能依赖在哪个平台跑。
         let caps = ProjectCapabilities {
+            target_platform: TargetPlatform::Linux,
             win32_native: true,
             ..ProjectCapabilities::default()
         };
         assert!(caps.validate().is_err());
         let caps = ProjectCapabilities {
+            target_platform: TargetPlatform::Linux,
             ui_directwrite: true,
             ..ProjectCapabilities::default()
         };
