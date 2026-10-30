@@ -10,10 +10,11 @@ Hub 是**独立项目**（自己的 Cargo workspace），不依赖 PrismaRev 仓
 
 - **工程列表**：路径、最近打开时间、场景数、工程结构、记录用的编辑器版本。
 - **新建工程**：按勾选的能力生成模板——维度（2D / 3D）、UI 叠加、音频、物理、路径
-  追踪、Linux 窗口后端（x11 / wayland）。`prism-app` 的 feature 由勾选项推导，模板场景
+  追踪、窗口后端（Linux 的 x11 / wayland，Windows 的 Win32 原生窗口）、体积档位
+  （标准发布 / 极限体积）。`prism-app` 的 feature 由勾选项推导，模板场景
   也随维度变化（2D = 正交相机 + 精灵，3D = 天空盒 + 透视相机 + 平行光）；生成后界面显示
-  实际路径与 feature 列表，失败时把 cargo/IO 错误留在弹窗里。找到源码时才生成游戏 crate
-  （依赖用绝对路径，工程可以放在任意位置）。
+  实际路径、feature 列表与预估体积（标「估算」），失败时把 cargo/IO 错误留在弹窗里。
+  找到源码时才生成游戏 crate（依赖用绝对路径，工程可以放在任意位置）。
 - **版本识别**：每个工程用 `ProjectSettings/ProjectVersion.txt` 记录编辑器版本：
   ```text
   m_EditorVersion: 0.1.0
@@ -31,11 +32,18 @@ Hub 是**独立项目**（自己的 Cargo workspace），不依赖 PrismaRev 仓
 | 勾选 | feature |
 | --- | --- |
 | 维度 2D / 3D | `group-2d` / `group-3d` |
-| UI 叠加 | `ui` + `group-ui`（渲染叠加 + 引擎 UI 系统 + UI 组件组） |
+| UI 叠加 | `ui` + `group-ui`（渲染叠加 + 引擎 UI 系统 + UI 组件组）+ 文本后端 |
 | 音频 | `audio` |
 | 物理 | `physics` |
 | 路径追踪 | `pathtrace`（同时把 `assets/settings.toml` 的 `render_mode` 写成 `path_trace`） |
 | Linux 窗口后端 | `x11` / `wayland`（可多选，默认全选；Linux 上至少要一个） |
+| Windows 窗口后端 | `win32-native`（不链接 winit）或默认的 `winit-backend`；选了前者不再写 `x11` / `wayland` |
+| 文本后端 | `ui-fontdue`（默认，全平台）/ `ui-directwrite`（Windows，省掉 fontdue；两者互斥） |
+
+目标平台默认取 Hub 自己运行的平台（`HubEnvironment.hostPlatform`），反过来由
+`ProjectCapabilities.targetPlatform` 决定窗口 / 文本后端：Linux 目标写 `x11` / `wayland`，
+Windows 目标写 `win32-native` 或 `winit-backend`。平台专属项不会跨平台写入——在 Linux 上
+生成 Windows 工程也不行（`validate` 会直接报错）。
 
 `group-*` 是**组件组**（决定哪些组件类型注册），`ui` / `audio` / `physics` / `pathtrace`
 是**运行时能力**，两者不是一回事。不勾 UI 时 `group-ui` 也**不加**：模板场景里没有 UI
@@ -49,8 +57,9 @@ Hub 是**独立项目**（自己的 Cargo workspace），不依赖 PrismaRev 仓
 ### 能力目录（利弊与体积）
 
 向导里每一项的说明、利弊和体积成本来自 `src-tauri/src/capabilities.rs`（Rust 侧单一数据源，
-前端通过 `hub_capabilities` 命令取，不在 Vue 里硬编码）。数字是引擎侧实测（`dist` profile、
-strip、Linux aarch64），基准「3D 全量 + x11 + wayland + ui」≈ **4.47 MB**：
+前端通过 `hub_capabilities` 命令取，不在 Vue 里硬编码）。数字是引擎侧实测（`dist` profile +
+strip），基准按平台分开给——Linux 基准「3D 全量 + x11 + wayland + ui」≈ **4.47 MB**，
+Windows 基准「3D 全量 + winit」= **3,146,240 字节**（≈ 3.00 MB）：
 
 | 选项 | 成本 | 一句话 |
 | --- | --- | --- |
@@ -61,12 +70,27 @@ strip、Linux aarch64），基准「3D 全量 + x11 + wayland + ui」≈ **4.47 
 | 路径追踪 | −132 KB（关掉时） | 光追 GI / 阴影 / 反射；移动端基本用不上 |
 | Wayland | 约 +1.1 MB | 原生 Wayland（含 tiny-skia / ttf-parser），只影响 Linux |
 | X11 | 约 +90 KB | 兼容所有 Linux 桌面；纯 Wayland 环境需 XWayland |
+| Win32 原生窗口 | −163.5 KiB（3,146,240 → 2,978,816 字节） | 不链接 winit，消息泵自实现；与 winit 后端二选一，没有 IME / 拖放 / DnD，需真机验证 |
+| DirectWrite 文本 | −60 KiB（3,145,728 → 3,084,288 字节） | 用系统 DirectWrite 代替 fontdue；仅 Windows，复杂整形不支持，需真机确认 AA 与字体回退 |
 
-`win32-native` / `ui-directwrite` 已经在目录里但标成 `enabled: false`：界面置灰并写明
-「引擎侧开发中」，勾选不会写进 feature（不是隐藏，免得用户以为没这个能力）。
+两项 Windows 专属能力（`win32-native` / `ui-directwrite`）只在目标平台是 Windows 时
+显示、也只在那时写进 feature；Linux 的 `x11` / `wayland` 同理。勾 `ui-directwrite`
+会自动带上 `ui`，并且不会同时写 `ui-fontdue`（两者互斥）。
 
-勾选变化时界面实时算「预计体积」= 基准值 + 已偏离基准的项的增量。单项实测值相加不是严格
-线性的，所以那个数字一律标**估算**，并同时显示基准值与来源；未接线 / 未实测的项不参与累加。
+### 体积档位
+
+| 档位 | 生成内容 | 构建命令 |
+| --- | --- | --- |
+| 标准发布（默认） | 只有 `[profile.dist]` | `cargo build --profile dist` |
+| 极限体积 | 额外生成 `[profile.tiny]`（`opt-level = "z"` + fat LTO + 单 codegen unit + `panic = "abort"` + strip） | nightly `-Z build-std=std,panic_abort` + `-Cpanic=immediate-abort` + 禁内联（完整命令写进生成工程的 README） |
+
+实测：3D 全量 **4.47 MB → 2.70 MB（−40%）**。代价必须一起看：`opt-level = "z"` 禁内联后
+**CPU 热路径慢 10–30%**，CPU-bound 场景明显；现实区间 **2.5–3.2 MB**。这不是竞赛级 64k
+（那种体积靠 `no_std` + 手写系统 API + 可执行压缩器），不要把极限体积档宣传成 64k。
+
+勾选变化时界面实时算「预计体积」= 平台基准 + 已偏离基准的项的增量，极限体积档再按实测
+−40% 折算。单项实测值相加不是严格线性的，折算也不是逐组合实测，所以那个数字一律标
+**估算**，并同时显示基线、幅度与出处。
 
 ## 定位规则
 

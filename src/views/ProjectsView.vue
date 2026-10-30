@@ -7,11 +7,17 @@ import {
   hub,
   prettyPath,
   relativeTime,
+  targetPlatformFor,
+  targetPlatformLabel,
   type CapabilityCatalog,
+  type CapabilityInfo,
   type CreatedProject,
   type HubEnvironment,
+  type PlatformBaseline,
   type ProjectCapabilities,
   type ProjectEntry,
+  type SizeTierInfo,
+  type TargetPlatform,
 } from "../api";
 import CapabilityCard from "../components/CapabilityCard.vue";
 import type { Notice } from "../types";
@@ -42,8 +48,15 @@ const catalog = ref<CapabilityCatalog | null>(null);
 const catalogError = ref("");
 /** 向导的勾选状态：key 是目录项的 `id`，默认值来自目录的 `defaultOn`。 */
 const newOptions = ref<Record<string, boolean>>({});
+/** 体积档位（`standard` / `tiny`），与 2D/3D 同级。 */
+const newTier = ref<"standard" | "tiny">("standard");
 /** 展开了「利 / 弊」两列的目录项。 */
 const expandedOptions = ref<Record<string, boolean>>({});
+
+/** 目标平台 = Hub 自己运行的平台：Windows 专属项只在那时出现、也只在那时写进 feature。 */
+const targetPlatform = computed<TargetPlatform>(() =>
+  targetPlatformFor(props.env.hostPlatform),
+);
 
 /**
  * 勾选的能力。推导成 feature 的规则只在 Rust 侧
@@ -58,40 +71,81 @@ const newCapabilities = computed<ProjectCapabilities>(() => ({
   pathtrace: Boolean(newOptions.value.pathtrace),
   x11: Boolean(newOptions.value.x11),
   wayland: Boolean(newOptions.value.wayland),
+  targetPlatform: targetPlatform.value,
+  win32Native: Boolean(newOptions.value["win32-native"]),
+  uiDirectwrite: Boolean(newOptions.value["ui-directwrite"]),
+  sizeTier: newTier.value,
 }));
 
+/** 目录项是否适用于当前目标平台（空 `platforms` = 全平台）。 */
+function appliesToTarget(entry: CapabilityInfo): boolean {
+  return !entry.platforms.length || entry.platforms.includes(targetPlatform.value);
+}
+
 const dimensionOptions = computed(
-  () => catalog.value?.entries.filter((entry) => entry.kind === "dimension") ?? [],
+  () =>
+    catalog.value?.entries.filter(
+      (entry) => entry.kind === "dimension" && appliesToTarget(entry),
+    ) ?? [],
 );
 const capabilityOptions = computed(
-  () => catalog.value?.entries.filter((entry) => entry.kind === "feature") ?? [],
+  () =>
+    catalog.value?.entries.filter(
+      (entry) => entry.kind === "feature" && appliesToTarget(entry),
+    ) ?? [],
+);
+
+/** 体积档位卡片复用 CapabilityCard 的排版；选项数据仍然来自后端目录。 */
+const tierOptions = computed<CapabilityInfo[]>(() =>
+  (catalog.value?.sizeTiers ?? []).map((tier) => ({
+    id: tier.id,
+    label: tier.label,
+    summary: tier.summary,
+    pros: tier.pros,
+    cons: tier.cons,
+    cost: tier.command,
+    defaultOn: tier.defaultOn,
+    platforms: [],
+    enabled: true,
+    kind: "feature",
+    baselineOn: false,
+    sizeDeltaKb: null,
+    disabledReason: null,
+  })),
 );
 
 type Estimate = {
+  /** 最终估算（套过体积档位系数）。 */
   kb: number;
+  /** 同一组合在标准发布档下的估算。 */
+  standardKb: number;
   baselineKb: number;
   baselineLabel: string;
   baselineNote: string;
   deltas: { label: string; kb: number }[];
+  tier: SizeTierInfo | null;
 };
 
 /**
- * 预计体积 = 基准值 + 已经偏离基准的项的增量。
+ * 预计体积 = 平台基准 + 已经偏离基准的项的增量，再按体积档位系数折算。
  *
- * 数字全部来自目录（`baselineKb` / `baselineOn` / `sizeDeltaKb`），与 Rust 侧
- * `capabilities.rs` 的测试是同一套算法。单项实测值相加不是严格线性的，所以界面上
- * 一律写「估算」，并显示基准值与它的来源。
+ * 数字全部来自目录（`baselines` / `baselineOn` / `sizeDeltaKb` / `sizeTiers`），与
+ * Rust 侧 `capabilities.rs` 的测试是同一套算法。单项实测值相加不是严格线性的，
+ * 极限体积档又只是把实测比例套到其它组合上，所以界面一律写「估算」并显示出处。
  */
 const estimate = computed<Estimate | null>(() => {
   const data = catalog.value;
   if (!data) return null;
-  let kb = data.baselineKb;
+  const baseline: PlatformBaseline =
+    data.baselines.find((item) => item.platform === targetPlatform.value) ??
+    data.baselines[0];
+  let standardKb = baseline.kb;
   const deltas: Estimate["deltas"] = [];
   for (const entry of data.entries) {
-    if (!entry.enabled || entry.sizeDeltaKb === null) continue;
+    if (!entry.enabled || !appliesToTarget(entry) || entry.sizeDeltaKb === null) continue;
     const on = Boolean(newOptions.value[entry.id]);
     if (on === entry.baselineOn) continue;
-    kb += entry.sizeDeltaKb;
+    standardKb += entry.sizeDeltaKb;
     if (entry.sizeDeltaKb !== 0) {
       deltas.push({
         label: `${on ? "开启" : "关闭"} ${entry.label}`,
@@ -99,12 +153,16 @@ const estimate = computed<Estimate | null>(() => {
       });
     }
   }
+  const tier = data.sizeTiers.find((item) => item.id === newTier.value) ?? null;
+  const percent = tier?.sizePercent ?? 100;
   return {
-    kb,
-    baselineKb: data.baselineKb,
-    baselineLabel: data.baselineLabel,
-    baselineNote: data.baselineNote,
+    kb: Math.round((standardKb * percent) / 100),
+    standardKb,
+    baselineKb: baseline.kb,
+    baselineLabel: baseline.label,
+    baselineNote: baseline.note,
     deltas,
+    tier,
   };
 });
 
@@ -158,13 +216,19 @@ const effectiveVersion = computed(
   () => chosenEditor.value?.version ?? props.env.editors.find((i) => i.isDefault)?.version,
 );
 
-/** 目录项的默认勾选状态；未接线的项永远是关的。 */
+/** 目录项的默认勾选状态；未接线的项、不适用当前平台的项永远是关的。 */
 function catalogDefaults(): Record<string, boolean> {
   const next: Record<string, boolean> = {};
   for (const entry of catalog.value?.entries ?? []) {
-    next[entry.id] = entry.enabled && entry.defaultOn;
+    next[entry.id] =
+      entry.enabled && entry.defaultOn && appliesToTarget(entry);
   }
   return next;
+}
+
+/** 目录里的默认体积档位（标准发布）。 */
+function defaultTier(): "standard" | "tiny" {
+  return catalog.value?.sizeTiers.find((tier) => tier.defaultOn)?.id ?? "standard";
 }
 
 async function loadCatalog() {
@@ -184,7 +248,11 @@ onMounted(() => {
 });
 
 function setOption(id: string, on: boolean) {
-  newOptions.value = { ...newOptions.value, [id]: on };
+  const next = { ...newOptions.value, [id]: on };
+  // 与 Rust 侧的连带规则一致：DirectWrite 隐含 ui，关掉 ui 也关掉 DirectWrite。
+  if (id === "ui-directwrite" && on) next.ui = true;
+  if (id === "ui" && !on) next["ui-directwrite"] = false;
+  newOptions.value = next;
 }
 
 /** 2D / 3D 是单选组：点一个就把同组其它项关掉。 */
@@ -194,6 +262,11 @@ function chooseDimension(id: string) {
     next[entry.id] = entry.id === id;
   }
   newOptions.value = next;
+}
+
+/** 体积档位是单选组。 */
+function chooseTier(id: string) {
+  newTier.value = id === "tiny" ? "tiny" : "standard";
 }
 
 function toggleDetails(id: string) {
@@ -302,6 +375,7 @@ function openNewProject() {
     ? `${props.env.engine.root}/projects`
     : "";
   newOptions.value = catalogDefaults();
+  newTier.value = defaultTier();
   expandedOptions.value = {};
   newError.value = "";
   if (!catalog.value) void loadCatalog();
@@ -609,7 +683,7 @@ async function revealCreated() {
             {{
               created
                 ? "下面是实际生成的目录与 feature 组合。"
-                : "勾选能力后生成资源骨架与最小游戏 crate；每项都标了利弊与实测体积，feature 由后端推导。"
+                : "勾选能力与体积档位后生成资源骨架与最小游戏 crate；每项都标了利弊与实测体积，feature 由后端推导。"
             }}
           </p>
         </div>
@@ -630,6 +704,24 @@ async function revealCreated() {
           <p v-else class="result-note">
             没有生成游戏 crate（Hub 没找到 PrismaRev 源码），因此没有 feature 列表。
           </p>
+
+          <template v-if="estimate">
+            <p class="section-label">预估体积</p>
+            <p class="result-note">
+              ≈ {{ formatMb(estimate.kb) }}（估算，来自引擎实测基线：
+              {{ estimate.baselineLabel }}<template
+                v-if="estimate.tier && estimate.tier.sizePercent !== 100"
+              >；{{ estimate.tier.label }}按实测 −{{
+                100 - estimate.tier.sizePercent
+              }}% 折算</template>）。
+            </p>
+            <p
+              v-if="estimate.tier && estimate.tier.sizePercent !== 100"
+              class="result-note"
+            >
+              {{ estimate.tier.reference }}。代价：{{ estimate.tier.cons.join("；") }}。
+            </p>
+          </template>
         </div>
 
         <p v-if="!created.gameCrate" class="callout warn">
@@ -669,6 +761,12 @@ async function revealCreated() {
 
         <p v-if="newProjectPath" class="path-preview mono">{{ newProjectPath }}</p>
 
+        <p class="hint">
+          目标平台：<strong>{{ targetPlatformLabel(targetPlatform) }}</strong>（Hub 当前系统）。
+          Windows 专属项（Win32 原生窗口 / DirectWrite 文本）只在 Windows 目标下出现，
+          Linux 的窗口后端只在 Linux 目标下出现；另一平台的选项不会写进 feature。
+        </p>
+
         <p v-if="catalogError" class="callout danger">
           读取能力目录失败：{{ catalogError }}
           <button class="link-btn" @click="loadCatalog">重试</button>
@@ -692,6 +790,24 @@ async function revealCreated() {
         </div>
 
         <div class="field">
+          <span>体积档位（互斥）</span>
+          <div v-if="tierOptions.length" class="option-grid">
+            <CapabilityCard
+              v-for="entry in tierOptions"
+              :key="entry.id"
+              :entry="entry"
+              :checked="newTier === entry.id"
+              :expanded="Boolean(expandedOptions[entry.id])"
+              radio
+              group="capability-tier"
+              @change="chooseTier(entry.id)"
+              @expand="toggleDetails(entry.id)"
+            />
+          </div>
+          <p v-else-if="!catalogError" class="option-loading">正在读取体积档位…</p>
+        </div>
+
+        <div class="field">
           <span>能力（可多选）</span>
           <div v-if="capabilityOptions.length" class="option-list">
             <CapabilityCard
@@ -709,7 +825,7 @@ async function revealCreated() {
 
         <div v-if="estimate" class="estimate">
           <div class="estimate-head">
-            <span class="section-label">预计体积</span>
+            <span class="section-label">预计体积（估算，来自引擎实测基线）</span>
             <strong class="mono">≈ {{ formatMb(estimate.kb) }}</strong>
             <span class="badge">估算</span>
           </div>
@@ -727,9 +843,21 @@ async function revealCreated() {
             </span>
           </p>
           <p v-else class="estimate-deltas">当前就是基准组合</p>
+          <p
+            v-if="estimate.tier && estimate.tier.sizePercent !== 100"
+            class="estimate-source"
+          >
+            {{ estimate.tier.label }}：标准发布 {{ formatMb(estimate.standardKb) }} →
+            {{ formatMb(estimate.kb) }}（按实测 −{{
+              100 - estimate.tier.sizePercent
+            }}% 折算，仍是估算）。出处：{{ estimate.tier.reference }}
+          </p>
         </div>
 
-        <p v-if="catalog && !newOptions.x11 && !newOptions.wayland" class="callout warn">
+        <p
+          v-if="catalog && targetPlatform === 'linux' && !newOptions.x11 && !newOptions.wayland"
+          class="callout warn"
+        >
           Linux 上至少要选一个窗口后端（x11 或 wayland），否则生成的程序无法开窗口。
           其它平台不需要这两个 feature。
         </p>
