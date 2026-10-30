@@ -4,11 +4,11 @@
 //!
 //! - `env`：`PRISMREV_EDITOR_BIN` 显式指定（不可移除）；
 //! - `bundled`：与 Hub 可执行文件同目录（打包布局）；
-//! - `dev`：引擎 checkout 的 `editor/src-tauri/target/{debug,release}`（开发布局）；
+//! - `dev`：引擎 checkout 的 `editor/target/{debug,release}`（开发布局）；
 //! - `manual`：用户在编辑器页手动添加的二进制（存进 `hub.json`）。
 //!
 //! 版本通过 `<binary> --version` 探测（输出 `prisma-editor <version>`）；探测失败时
-//! 回退到二进制所在 checkout 的 `editor/src-tauri/tauri.conf.json`，所以旧版编辑器
+//! 回退到二进制所在 checkout 的 `editor/Cargo.toml`，所以旧版编辑器
 //! 没有 `--version` 也能显示版本。
 
 use serde::Serialize;
@@ -21,11 +21,12 @@ use crate::util::{canonical_string, profile, same_path};
 
 pub const EDITOR_BIN_ENV: &str = "PRISMREV_EDITOR_BIN";
 
-/// 打包布局下 Tauri bundle 与 cargo 构建的两种二进制名。
-pub fn editor_binary_names() -> [String; 2] {
+/// 编辑器二进制名：旧 Tauri 壳（打包 / cargo）与当前 egui 壳。
+pub fn editor_binary_names() -> [String; 3] {
     [
         format!("prisma-editor{}", std::env::consts::EXE_SUFFIX),
         format!("prisma-editor-app{}", std::env::consts::EXE_SUFFIX),
+        format!("prism-editor-egui{}", std::env::consts::EXE_SUFFIX),
     ]
 }
 
@@ -98,10 +99,10 @@ pub fn probe_version(binary: &Path) -> Result<String, String> {
         })
 }
 
-/// 二进制在 `<engine>/editor/src-tauri/target/<profile>/` 下时，用 checkout 的版本兜底。
+/// 二进制在 `<engine>/editor/target/<profile>/` 下时，用 checkout 的版本兜底。
 fn version_from_checkout(binary: &Path, engine_root: Option<&Path>) -> Option<String> {
     let root = engine_root?;
-    let target = root.join("editor/src-tauri/target");
+    let target = root.join("editor/target");
     if !binary.starts_with(&target) {
         return None;
     }
@@ -133,7 +134,7 @@ pub fn candidates(
     }
 
     if let Some(root) = engine_root {
-        let target = root.join("editor/src-tauri/target");
+        let target = root.join("editor/target");
         let other = if profile() == "debug" {
             "release"
         } else {
@@ -314,7 +315,7 @@ mod tests {
         std::fs::create_dir_all(&exe_dir).expect("创建 exe 目录");
         touch(
             &engine
-                .join("editor/src-tauri/target/debug")
+                .join("editor/target/debug")
                 .join(format!("prisma-editor-app{}", std::env::consts::EXE_SUFFIX)),
         );
 

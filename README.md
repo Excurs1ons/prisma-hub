@@ -20,7 +20,7 @@ Hub 是**独立项目**（自己的 Cargo workspace），不依赖 PrismaRev 仓
   m_EditorVersion: 0.1.0
   ```
 - **编辑器管理**：自动发现 + 手动添加，可设默认、可移除；版本通过
-  `prisma-editor --version` 探测。
+  `prism-editor-egui --version` 探测（旧 `prisma-editor` 仍兼容）。
 - **打开工程**：显式选择的编辑器 → 版本完全匹配的安装 → 默认编辑器。启动后把版本
   标记更新成实际使用的版本。同一工程不会重复启动。
 - **源码根设置**：`PRISMREV_ROOT` → 设置页保存的路径 → Hub 上级目录 → 同级目录自动发现。
@@ -97,7 +97,7 @@ Windows 基准「3D 全量 + winit」= **3,146,240 字节**（≈ 3.00 MB）：
 ### PrismaRev 源码根
 
 「源码根」必须同时包含 `crates/prism-app`、`crates/prism-engine` 与
-`editor/src-tauri/tauri.conf.json`。解析顺序：
+`editor/Cargo.toml`。解析顺序：
 
 1. `PRISMREV_ROOT`（显式覆盖；设置了却无效会直接报错，不回退）；
 2. 设置页保存的路径；
@@ -110,12 +110,12 @@ Windows 基准「3D 全量 + winit」= **3,146,240 字节**（≈ 3.00 MB）：
 不查 `PATH`：
 
 1. `PRISMREV_EDITOR_BIN`（显式指定；不可从列表移除）；
-2. 与 Hub 可执行文件同目录的 `prisma-editor[.exe]` / `prisma-editor-app[.exe]`；
-3. `<源码根>/editor/src-tauri/target/{debug,release}/` 下的同名二进制；
+2. 与 Hub 可执行文件同目录的 `prism-editor-egui[.exe]` / `prisma-editor[.exe]` / `prisma-editor-app[.exe]`；
+3. `<源码根>/editor/target/{debug,release}/` 下的同名二进制；
 4. 手动添加的安装（保存在 `hub.json`）。
 
 版本探测失败时（旧版编辑器没有 `--version`），回退到该 checkout 的
-`editor/src-tauri/tauri.conf.json` 版本。
+`editor/Cargo.toml` 里的版本。
 
 ## 开发
 

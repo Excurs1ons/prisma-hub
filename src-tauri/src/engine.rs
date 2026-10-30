@@ -9,7 +9,7 @@
 //! 4. Hub 可执行文件各级父目录的同级目录（常见布局：`~/src/PrismaRev` + `~/src/prisma-hub`）。
 //!
 //! 「是引擎根」的判定同时要求 `crates/prism-app`、`crates/prism-engine` 和
-//! `editor/src-tauri/tauri.conf.json` 存在——只看一个目录名不够可靠。
+//! `editor/Cargo.toml` 存在——只看一个目录名不够可靠。
 
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -47,7 +47,7 @@ pub struct EngineInfo {
     pub source: &'static str,
     /// 设置页保存的值（可能和 `root` 不同：保存的路径已失效时仍回显）。
     pub setting: Option<String>,
-    /// `editor/src-tauri/tauri.conf.json` 里的版本，用于给编辑器版本兜底。
+    /// `editor/Cargo.toml` 里的版本，用于给编辑器版本兜底。
     pub editor_version: Option<String>,
     /// 环境变量 / 设置值无效时的说明。
     pub hint: Option<String>,
@@ -62,17 +62,32 @@ impl EngineInfo {
 pub fn is_engine_root(path: &Path) -> bool {
     path.join("crates/prism-app/Cargo.toml").is_file()
         && path.join("crates/prism-engine/Cargo.toml").is_file()
-        && path.join("editor/src-tauri/tauri.conf.json").is_file()
+        && path.join("editor/Cargo.toml").is_file()
 }
 
-/// 读取引擎 checkout 里编辑器的版本号（`editor/src-tauri/tauri.conf.json`）。
+/// 读取引擎 checkout 里编辑器的版本号（`editor/Cargo.toml` 的 `[workspace.package]`）。
 pub fn editor_version(root: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(root.join("editor/src-tauri/tauri.conf.json")).ok()?;
-    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
-    value
-        .get("version")
-        .and_then(|version| version.as_str())
-        .map(str::to_string)
+    let text = std::fs::read_to_string(root.join("editor/Cargo.toml")).ok()?;
+    let mut in_workspace_package = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_workspace_package = line == "[workspace.package]";
+            continue;
+        }
+        if !in_workspace_package {
+            continue;
+        }
+        let Some(rest) = line.strip_prefix("version") else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let Some(rest) = rest.strip_prefix('=') else {
+            continue;
+        };
+        return Some(rest.trim().trim_matches('"').to_string());
+    }
+    None
 }
 
 /// 从 `start` 逐级向上找引擎根。
@@ -142,7 +157,7 @@ pub fn detect(exe_dir: &Path, setting: Option<&str>, env: Option<&str>) -> Engin
             setting: setting_owned,
             editor_version: None,
             hint: Some(format!(
-                "{ENGINE_ROOT_ENV} 指向的目录不是 PrismaRev 源码根（缺少 crates/prism-app 或 editor/src-tauri）：{}",
+                "{ENGINE_ROOT_ENV} 指向的目录不是 PrismaRev 源码根（缺少 crates/prism-app 或 editor/Cargo.toml）：{}",
                 path.display()
             )),
         };
@@ -225,12 +240,16 @@ mod tests {
     fn fake_engine(root: &Path, version: &str) {
         touch(&root.join("crates/prism-app/Cargo.toml"));
         touch(&root.join("crates/prism-engine/Cargo.toml"));
-        touch(&root.join("editor/src-tauri/tauri.conf.json"));
+        touch(&root.join("editor/Cargo.toml"));
         std::fs::write(
-            root.join("editor/src-tauri/tauri.conf.json"),
-            format!(r#"{{"version":"{version}"}}"#),
+            root.join("editor/Cargo.toml"),
+            format!(
+                "[workspace.package]
+version = \"{version}\"
+"
+            ),
         )
-        .expect("写 tauri.conf.json");
+        .expect("写 editor/Cargo.toml");
     }
 
     #[test]
@@ -241,7 +260,7 @@ mod tests {
         assert!(!is_engine_root(&root));
         touch(&root.join("crates/prism-engine/Cargo.toml"));
         assert!(!is_engine_root(&root));
-        touch(&root.join("editor/src-tauri/tauri.conf.json"));
+        touch(&root.join("editor/Cargo.toml"));
         assert!(is_engine_root(&root));
     }
 
