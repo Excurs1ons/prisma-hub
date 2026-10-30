@@ -46,6 +46,28 @@ Hub 是**独立项目**（自己的 Cargo workspace），不依赖 PrismaRev 仓
 否则 `prism-scene` 的默认组件组会把 `group-*` 开关重新打开。生成后的工程 `README.md`
 会列出实际 feature 组合。
 
+### 能力目录（利弊与体积）
+
+向导里每一项的说明、利弊和体积成本来自 `src-tauri/src/capabilities.rs`（Rust 侧单一数据源，
+前端通过 `hub_capabilities` 命令取，不在 Vue 里硬编码）。数字是引擎侧实测（`dist` profile、
+strip、Linux aarch64），基准「3D 全量 + x11 + wayland + ui」≈ **4.47 MB**：
+
+| 选项 | 成本 | 一句话 |
+| --- | --- | --- |
+| 2D 渲染 | −197 KB（相对 3D 档） | 2D 不背 3D 组件，但没有灯光 / 天空盒 / 网格渲染组件 |
+| UI 叠加 | −64 KB（关掉时） | 文本 / HUD / 调试叠加；关掉后没有文字渲染，只剩几何 |
+| 音频 | 约 +1.0 MB | symphonia 全套编解码；仓库里还没有实际播放代码，属「预留」 |
+| 物理 | 约 +2 MB 依赖，未精确实测 | rapier3d / parry3d；目前只是骨架，未接进 `Engine::update` |
+| 路径追踪 | −132 KB（关掉时） | 光追 GI / 阴影 / 反射；移动端基本用不上 |
+| Wayland | 约 +1.1 MB | 原生 Wayland（含 tiny-skia / ttf-parser），只影响 Linux |
+| X11 | 约 +90 KB | 兼容所有 Linux 桌面；纯 Wayland 环境需 XWayland |
+
+`win32-native` / `ui-directwrite` 已经在目录里但标成 `enabled: false`：界面置灰并写明
+「引擎侧开发中」，勾选不会写进 feature（不是隐藏，免得用户以为没这个能力）。
+
+勾选变化时界面实时算「预计体积」= 基准值 + 已偏离基准的项的增量。单项实测值相加不是严格
+线性的，所以那个数字一律标**估算**，并同时显示基准值与来源；未接线 / 未实测的项不参与累加。
+
 ## 定位规则
 
 ### PrismaRev 源码根

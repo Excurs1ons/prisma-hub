@@ -76,8 +76,42 @@ export type CreatedProject = {
   gameCrate: boolean;
 };
 
+/** 能力目录的一项：说明、利弊与体积成本全部由后端给出，前端不硬编码。 */
+export type CapabilityInfo = {
+  id: string;
+  label: string;
+  summary: string;
+  pros: string[];
+  cons: string[];
+  /** 成本原文（「约 +1.0 MB」「未实测」…）；徽章直接显示这句。 */
+  cost: string;
+  defaultOn: boolean;
+  /** 这项只影响的平台；空 = 全平台。 */
+  platforms: string[];
+  /** `false` = 界面置灰并显示 `disabledReason`（引擎侧还没接线）。 */
+  enabled: boolean;
+  kind: "dimension" | "feature";
+  /** 基准构建里这项是开还是关。 */
+  baselineOn: boolean;
+  /**
+   * 相对基准构建、把这项切到非基准状态时的体积变化（KB，负 = 变小）。
+   * `null` = 不参与估算（未接线 / 未实测）。
+   */
+  sizeDeltaKb: number | null;
+  disabledReason: string | null;
+};
+
+/** 能力目录 + 体积基准。`baselineLabel` / `baselineNote` 是估算的出处，界面要显示。 */
+export type CapabilityCatalog = {
+  baselineKb: number;
+  baselineLabel: string;
+  baselineNote: string;
+  entries: CapabilityInfo[];
+};
+
 export const hub = {
   environment: () => invoke<HubEnvironment>("hub_environment"),
+  capabilities: () => invoke<CapabilityCatalog>("hub_capabilities"),
   setEngineRoot: (path: string) =>
     invoke<EngineInfo>("hub_set_engine_root", { path }),
   clearEngineRoot: () => invoke<EngineInfo>("hub_clear_engine_root"),
@@ -153,5 +187,17 @@ export function engineSourceLabel(source: EngineSource): string {
       return "同级目录自动发现";
     case "none":
       return "未找到";
+  }
+}
+
+/** 能力目录里的平台标记（Rust 侧只有 `linux` / `windows`）。 */
+export function capabilityPlatformLabel(platform: string): string {
+  switch (platform) {
+    case "linux":
+      return "仅 Linux";
+    case "windows":
+      return "仅 Windows";
+    default:
+      return platform;
   }
 }
